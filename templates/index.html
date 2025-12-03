@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>σ²</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        
+        <!-- 改进的消息通知容器 -->
+        <div class="message-container" id="messageContainer"></div>
+        
+        <div class="content-wrapper">
+            <div class="left-section">
+                <div class="quadrant-section">
+                    <div class="quadrant-toolbar">
+                        <button class="btn-primary" id="btnAnalyze">分析数据</button>
+                        <button class="btn-clear" id="btnClear">清空画布</button>
+                    </div>
+                    <div class="quadrant-chart">
+                        <canvas id="quadrantCanvas" class="quadrant-canvas"></canvas>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="right-section">
+                <div class="date-filter">
+                    <div class="filter-row">
+                        <div class="filter-group">
+                            <label class="filter-label">日期筛选</label>
+                            <select id="dateFilterSelect">
+                                <option value="">全部日期</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label class="filter-label">方向筛选</label>
+                            <div class="quadrant-filter">
+                                <div class="quadrant-select" id="quadrantSelectBtn">
+                                    <span class="quadrant-selected" id="quadrantSelected">全部</span>
+                                    <span class="quadrant-arrow">▼</span>
+                                </div>
+                                <!-- [需求 2] 更新下拉菜单中的 CSS 类以匹配新的颜色逻辑 -->
+                                <div class="quadrant-dropdown" id="quadrantDropdown">
+                                    <div class="quadrant-option">
+                                        <input type="checkbox" id="quad-all" value="全部" checked>
+                                        <label for="quad-all">全部</label>
+                                    </div>
+                                    <div class="quadrant-option">
+                                        <input type="checkbox" id="quad-1" value="偏多—买波">
+                                        <label for="quad-1"><span class="record-quadrant quad-bull-buy">偏多—买波</span></label>
+                                    </div>
+                                    <div class="quadrant-option">
+                                        <input type="checkbox" id="quad-2" value="偏多—卖波">
+                                        <label for="quad-2"><span class="record-quadrant quad-bull-sell">偏多—卖波</span></label>
+                                    </div>
+                                    <div class="quadrant-option">
+                                        <input type="checkbox" id="quad-3" value="偏空—买波">
+                                        <label for="quad-3"><span class="record-quadrant quad-bear-buy">偏空—买波</span></label>
+                                    </div>
+                                    <div class="quadrant-option">
+                                        <input type="checkbox" id="quad-4" value="偏空—卖波">
+                                        <label for="quad-4"><span class="record-quadrant quad-bear-sell">偏空—卖波</span></label>
+                                    </div>
+                                    <div class="quadrant-option">
+                                        <input type="checkbox" id="quad-5" value="中性/待观察">
+                                        <label for="quad-5"><span class="record-quadrant quad-neutral">中性/待观察</span></label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="records-list" id="recordsList">
+                    <div class="empty-state">暂无数据,请先提交分析</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 数据输入 Drawer -->
+    <div class="drawer-overlay" id="inputDrawerOverlay"></div>
+    <div class="drawer" id="inputDrawer">
+        <div class="drawer-header">
+            <div class="drawer-title">数据输入</div>
+            <button class="drawer-close" id="btnCloseInputDrawer">&times;</button>
+        </div>
+        <div class="drawer-content input-section">
+            <h2>请输入JSON格式数据</h2>
+            <textarea id="dataInput" placeholder='请输入JSON格式数据'></textarea>
+            <div class="button-group">
+                <button class="btn-primary-drawer" id="btnSubmitAnalyze">分析数据</button>
+                <button class="btn-cancel-drawer" id="btnCancelAnalyze">取消</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 详细信息 Drawer -->
+    <div class="drawer-overlay" id="detailDrawerOverlay"></div>
+    <div class="detail-drawer" id="detailDrawer">
+        <div class="detail-drawer-header">
+            <div class="detail-drawer-title" id="detailDrawerTitle">详细信息</div>
+            <button class="drawer-close" id="btnCloseDetailDrawer">&times;</button>
+        </div>
+        <div class="drawer-content" id="detailDrawerContent"></div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>
