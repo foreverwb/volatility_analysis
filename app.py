@@ -859,8 +859,18 @@ def update_config():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# 注册 swing 项目的 API 扩展
+from api_extension import register_swing_api
+register_swing_api(app)
+
+
 if __name__ == '__main__':
     print("\n" + "=" * 60)
     print("期权策略分析系统 - 整合优化版 v2.1")
+    print("=" * 60)
+    print("\n📡 Swing API 端点已启用:")
+    print("   GET  /api/swing/params/<symbol>?vix=XX")
+    print("   POST /api/swing/params/batch")
+    print("   GET  /api/swing/symbols")
     print("=" * 60)
     app.run(debug=True, host='0.0.0.0', port=8668)
