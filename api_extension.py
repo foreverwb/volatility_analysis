@@ -83,15 +83,16 @@ def get_latest_record_for_symbol(symbol: str) -> Optional[Dict[str, Any]]:
 
 def extract_swing_params(record: Dict[str, Any]) -> Dict[str, Any]:
     """
-    从 va 分析记录中提取 swing 需要的参数
+    从 va 分析记录中提取 swing/micro 系统需要的参数
     
     Args:
         record: va 的分析记录
         
     Returns:
-        swing 兼容的参数字典
+        swing 兼容的参数字典，包含 Meso 层信号供 Micro 动态调整
     """
     raw_data = record.get('raw_data', {})
+    derived_metrics = record.get('derived_metrics', {})
     
     # 提取基础参数
     ivr = raw_data.get('IVR')
@@ -110,17 +111,47 @@ def extract_swing_params(record: Dict[str, Any]) -> Dict[str, Any]:
         except:
             return None
     
+    # 解析期限结构比率 (格式可能是 "1.05 (倒挂/恐慌)" 或 "0.92 (陡峭/正常)")
+    term_structure_raw = record.get('term_structure_ratio', 'N/A')
+    term_structure_ratio = None
+    if term_structure_raw and term_structure_raw != 'N/A':
+        try:
+            # 提取数字部分
+            term_structure_ratio = float(term_structure_raw.split()[0])
+        except:
+            pass
+    
     result = {
         'ivr': clean_number(ivr),
         'iv30': clean_number(iv30),
         'hv20': clean_number(hv20),
         'earning_date': parse_earnings_date_to_iso(earnings_raw),
-        # 扩展信息（供参考）
+        
+        # === Meso 信号字段 (供 Micro 动态调整) ===
         '_source': {
             'symbol': record.get('symbol'),
             'timestamp': record.get('timestamp'),
             'quadrant': record.get('quadrant'),
             'confidence': record.get('confidence'),
+            
+            # 方向与波动分数
+            'direction_score': record.get('direction_score', 0.0),
+            'vol_score': record.get('vol_score', 0.0),
+            'direction_bias': record.get('direction_bias', '中性'),
+            'vol_bias': record.get('vol_bias', '中性'),
+            
+            # 关键状态标记
+            'is_squeeze': record.get('is_squeeze', False),
+            'is_index': record.get('is_index', False),
+            
+            # 市场环境指标
+            'spot_vol_corr_score': record.get('spot_vol_corr_score', 0.0),
+            'term_structure_ratio': term_structure_ratio,
+            
+            # 派生指标
+            'ivrv_ratio': derived_metrics.get('ivrv_ratio', 1.0),
+            'regime_ratio': derived_metrics.get('regime_ratio', 1.0),
+            'days_to_earnings': derived_metrics.get('days_to_earnings'),
         }
     }
     
