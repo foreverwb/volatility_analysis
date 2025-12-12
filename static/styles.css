@@ -1592,7 +1592,7 @@ textarea:focus {
 /* ==================== Tooltip 样式（可选）==================== */
 [title] {
     position: relative;
-    cursor: help;
+    cursor: progress;
 }
 
 /* 可以使用现代 CSS 添加 tooltip，但建议使用 JS 库如 tippy.js */
@@ -1672,5 +1672,390 @@ textarea:focus {
 @keyframes spin {
     to {
         transform: rotate(360deg);
+    }
+}
+
+/* ========================================
+   v2.2 新增样式 - 追加到 styles.css
+   ======================================== */
+
+/* ========================================
+   期限结构标签
+   ======================================== */
+.term-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: 'Courier New', monospace;
+}
+
+.term-label.short-steep {
+    background: linear-gradient(135deg, #FF5722 0%, #FF7043 100%);
+    color: white;
+    box-shadow: 0 1px 3px rgba(255, 87, 34, 0.3);
+}
+
+.term-label.long-steep {
+    background: linear-gradient(135deg, #2196F3 0%, #42A5F5 100%);
+    color: white;
+    box-shadow: 0 1px 3px rgba(33, 150, 243, 0.3);
+}
+
+.term-label.smooth {
+    background: linear-gradient(135deg, #4CAF50 0%, #66BB6A 100%);
+    color: white;
+    box-shadow: 0 1px 3px rgba(76, 175, 80, 0.3);
+}
+
+/* ========================================
+   主动建仓/平仓图标（增强版）
+   ======================================== */
+.ao-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 6px;
+    vertical-align: middle;
+    letter-spacing: 0.3px;
+    transition: all 0.3s;
+}
+
+.ao-icon.ao-buy {
+    background: linear-gradient(135deg, #00C853 0%, #00E676 100%);
+    color: white;
+    box-shadow: 0 1px 3px rgba(0, 200, 83, 0.3);
+}
+
+.ao-icon.ao-sell {
+    background: linear-gradient(135deg, #FF3B30 0%, #FF6259 100%);
+    color: white;
+    box-shadow: 0 1px 3px rgba(255, 59, 48, 0.3);
+}
+
+.ao-icon:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* ========================================
+   详情抽屉 - 主动建仓比高亮行
+   ======================================== */
+.detail-row-highlight {
+    background: linear-gradient(90deg, rgba(24, 144, 255, 0.08) 0%, transparent 100%);
+    margin: 0 -25px;
+    padding: 12px 25px;
+    border-left: 4px solid #1890ff;
+    transition: all 0.3s;
+}
+
+.detail-row-highlight:hover {
+    background: linear-gradient(90deg, rgba(24, 144, 255, 0.12) 0%, transparent 100%);
+}
+
+.active-open-value {
+    font-size: 18px;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+    letter-spacing: 0.5px;
+    margin-right: 8px;
+}
+
+.active-open-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.9);
+    font-size: 12px;
+    font-weight: 600;
+    color: #1890ff;
+    border: 1px solid #91d5ff;
+    margin-left: 8px;
+}
+
+/* ========================================
+   OI 变化量显示
+   ======================================== */
+.oi-delta-positive {
+    color: #00C853 !important;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+}
+
+.oi-delta-negative {
+    color: #FF3B30 !important;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+}
+
+/* ========================================
+    指标区块样式
+   ======================================== */
+.detail-section h3 {
+    color: #1890ff;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #1890ff;
+    font-size: 15px;
+    margin-top: 18px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.detail-section:first-child {
+    padding-top: 25px;
+}
+
+.detail-section:first-child h3 {
+    margin-top: 0;
+}
+
+/* ========================================
+   数据不可用状态
+   ======================================== */
+.data-unavailable {
+    color: #bfbfbf;
+    font-style: italic;
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.data-unavailable::before {
+    content: "⊘";
+    font-size: 14px;
+    font-style: normal;
+    opacity: 0.5;
+}
+
+/* ========================================
+   脉冲动画（用于挤压高亮）
+   ======================================== */
+@keyframes pulse-green {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(0, 200, 83, 0.7);
+    }
+    50% {
+        box-shadow: 0 0 0 6px rgba(0, 200, 83, 0);
+    }
+}
+
+@keyframes pulse-red {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.7);
+    }
+    50% {
+        box-shadow: 0 0 0 6px rgba(255, 59, 48, 0);
+    }
+}
+
+.ao-icon.ao-buy:hover {
+    animation: pulse-green 1.5s infinite;
+}
+
+.ao-icon.ao-sell:hover {
+    animation: pulse-red 1.5s infinite;
+}
+
+/* ========================================
+   响应式优化 (v2.2)
+   ======================================== */
+@media (max-width: 768px) {
+    .term-label {
+        font-size: 10px;
+        padding: 2px 6px;
+    }
+    
+    .ao-icon {
+        font-size: 10px;
+        padding: 1px 4px;
+    }
+    
+    .active-open-value {
+        font-size: 16px;
+    }
+    
+    .active-open-label {
+        font-size: 10px;
+        padding: 2px 8px;
+    }
+    
+    .detail-row-highlight {
+        margin: 0 -15px;
+        padding: 10px 15px;
+        border-left-width: 3px;
+    }
+}
+
+/* ========================================
+   打印样式
+   ======================================== */
+@media print {
+    .term-label,
+    .ao-icon,
+    .active-open-label {
+        border: 1px solid #ccc;
+        background: white !important;
+        color: black !important;
+        box-shadow: none !important;
+    }
+    
+    .detail-row-highlight {
+        border-left-color: #000;
+        background: none !important;
+    }
+}
+
+/* ========================================
+   高对比度模式
+   ======================================== */
+@media (prefers-contrast: high) {
+    .term-label.short-steep {
+        border: 2px solid #D32F2F;
+    }
+    
+    .term-label.long-steep {
+        border: 2px solid #1976D2;
+    }
+    
+    .term-label.smooth {
+        border: 2px solid #388E3C;
+    }
+    
+    .ao-icon.ao-buy {
+        border: 2px solid #00C853;
+    }
+    
+    .ao-icon.ao-sell {
+        border: 2px solid #FF3B30;
+    }
+    
+    .detail-row-highlight {
+        border-left-width: 5px;
+    }
+}
+
+/* ========================================
+   深色模式支持（预留）
+   ======================================== */
+@media (prefers-color-scheme: dark) {
+    .term-label {
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+    }
+    
+    .active-open-label {
+        background: rgba(33, 33, 33, 0.9);
+        border-color: #40a9ff;
+        color: #64b5f6;
+    }
+    
+    .detail-row-highlight {
+        background: linear-gradient(90deg, rgba(100, 181, 246, 0.15) 0%, transparent 100%);
+        border-left-color: #64b5f6;
+    }
+    
+    .data-unavailable {
+        color: #757575;
+    }
+}
+
+/* ========================================
+   Tooltip 样式（可选）
+   ======================================== */
+[data-tooltip] {
+    position: relative;
+    cursor: progress;
+}
+
+[data-tooltip]:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 6px 12px;
+    background: rgba(0, 0, 0, 0.9);
+    color: white;
+    font-size: 12px;
+    white-space: nowrap;
+    border-radius: 4px;
+    z-index: 1000;
+    pointer-events: none;
+    margin-bottom: 8px;
+}
+
+[data-tooltip]:hover::before {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: rgba(0, 0, 0, 0.9);
+    margin-bottom: 3px;
+    z-index: 1000;
+}
+
+/* ========================================
+   加载动画（可选扩展）
+   ======================================== */
+.loading-spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid #1890ff;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    vertical-align: middle;
+    margin-left: 8px;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* ========================================
+   Meso 指标颜色语义增强
+   ======================================== */
+.detail-value[style*="color: #00C853"] {
+    text-shadow: 0 0 8px rgba(0, 200, 83, 0.2);
+}
+
+.detail-value[style*="color: #FF3B30"] {
+    text-shadow: 0 0 8px rgba(255, 59, 48, 0.2);
+}
+
+/* ========================================
+   小屏幕下的图标优化
+   ======================================== */
+@media (max-width: 480px) {
+    .badge-squeeze {
+        font-size: 9px;
+        padding: 1px 4px;
+    }
+    
+    .badge-type {
+        font-size: 9px;
+        padding: 1px 4px;
+    }
+    
+    .earnings-badge {
+        width: 14px;
+        height: 14px;
+        font-size: 9px;
     }
 }

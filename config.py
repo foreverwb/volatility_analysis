@@ -5,7 +5,7 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(BASE_DIR, 'analysis_records.json')
 
-# Meso v2.2 策略参数
+#  策略参数
 MESO_CONFIG = {
     # 基础风控
     "min_liquidity_conf": 0.3,

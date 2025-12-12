@@ -64,7 +64,7 @@ class MesoEngine:
         iv30_chg = clean_val(rec.get('IV30ChgPct', 0))
         iv_rank = clean_val(rec.get('IVR', rec.get('IV Rank', 50))) # 兼容不同字段名
         
-        # --- 2. 核心指标计算 (Meso v2.2) ---
+        # --- 2. 核心指标计算 () ---
         
         # A. Net Sentiment
         is_index = sym in INDEX_TICKERS
