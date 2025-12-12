@@ -1250,3 +1250,427 @@ textarea:focus {
         box-shadow: 0 0 0 0 rgba(255, 77, 79, 0);
     }
 }
+
+.oi-source-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-left: 8px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    vertical-align: middle;
+}
+
+.oi-source-badge.auto {
+    background: linear-gradient(135deg, #00C853 0%, #00E676 100%);
+    color: white;
+    box-shadow: 0 1px 3px rgba(0, 200, 83, 0.3);
+}
+
+.oi-source-badge.manual {
+    background: #e8f5e9;
+    color: #2e7d32;
+    border: 1px solid #a5d6a7;
+}
+
+/* ==================== 主动建仓比增强样式 ==================== */
+.detail-row-highlight {
+    background: linear-gradient(90deg, rgba(24, 144, 255, 0.05) 0%, transparent 100%);
+    margin: 0 -25px;
+    padding: 10px 25px;
+    border-left: 3px solid #1890ff;
+}
+
+.active-open-value {
+    font-size: 16px;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+}
+
+.active-open-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.8);
+    font-size: 13px;
+    margin-left: 8px;
+}
+
+/* ==================== 记录列表中的 OI 徽章 ==================== */
+.badge-oi-auto {
+    display: inline-flex;
+    align-items: center;
+    background: #e8f5e9;
+    color: #2e7d32;
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 6px;
+    font-weight: 700;
+    border: 1px solid #a5d6a7;
+    vertical-align: middle;
+}
+
+.badge-oi-manual {
+    display: inline-flex;
+    align-items: center;
+    background: #fff3e0;
+    color: #e65100;
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 6px;
+    font-weight: 600;
+    border: 1px solid #ffcc80;
+    vertical-align: middle;
+}
+
+/* ==================== 主动建仓/平仓图标 ==================== */
+.ao-icon {
+    display: inline-flex;
+    align-items: center;
+    font-size: 12px;
+    margin-left: 6px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    vertical-align: middle;
+}
+
+.ao-icon.ao-buy {
+    color: #00C853;
+    background: rgba(0, 200, 83, 0.1);
+}
+
+.ao-icon.ao-sell {
+    color: #FF3B30;
+    background: rgba(255, 59, 48, 0.1);
+}
+
+/* ==================== OI 变化显示 ==================== */
+.oi-delta-positive {
+    color: #00C853;
+    font-weight: 600;
+}
+
+.oi-delta-negative {
+    color: #FF3B30;
+    font-weight: 600;
+}
+
+/* ==================== OI 覆盖率徽章（可选，添加到页面顶部）==================== */
+#oi-coverage-badge {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+    z-index: 100;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    transition: all 0.3s;
+}
+
+#oi-coverage-badge.badge-high {
+    background: linear-gradient(135deg, #00C853 0%, #00E676 100%);
+    color: white;
+}
+
+#oi-coverage-badge.badge-medium {
+    background: linear-gradient(135deg, #FFC107 0%, #FFD54F 100%);
+    color: #5d4037;
+}
+
+#oi-coverage-badge.badge-low {
+    background: linear-gradient(135deg, #FF5722 0%, #FF7043 100%);
+    color: white;
+}
+
+#oi-coverage-badge:hover {
+    transform: scale(1.05);
+    cursor: pointer;
+}
+
+/* ==================== 详情抽屉中的 OI 细分展示 ==================== */
+.oi-breakdown {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+    padding: 8px;
+    background: #f5f5f5;
+    border-radius: 4px;
+}
+
+.oi-breakdown-item {
+    flex: 1;
+    text-align: center;
+}
+
+.oi-breakdown-label {
+    font-size: 10px;
+    color: #00000045;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.oi-breakdown-value {
+    font-size: 14px;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+}
+
+.oi-breakdown-value.call {
+    color: #00C853;
+}
+
+.oi-breakdown-value.put {
+    color: #FF3B30;
+}
+
+/* ==================== 数据不可用状态优化 ==================== */
+.data-unavailable {
+    color: #bfbfbf;
+    font-style: italic;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.data-unavailable::before {
+    content: "⊘";
+    font-size: 14px;
+    font-style: normal;
+}
+
+/* ==================== 动画效果 ==================== */
+@keyframes pulse-green {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(0, 200, 83, 0.7);
+    }
+    50% {
+        box-shadow: 0 0 0 4px rgba(0, 200, 83, 0);
+    }
+}
+
+@keyframes pulse-red {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.7);
+    }
+    50% {
+        box-shadow: 0 0 0 4px rgba(255, 59, 48, 0);
+    }
+}
+
+.ao-icon.ao-buy:hover {
+    animation: pulse-green 1.5s infinite;
+}
+
+.ao-icon.ao-sell:hover {
+    animation: pulse-red 1.5s infinite;
+}
+
+/* ==================== 响应式优化 ==================== */
+@media (max-width: 768px) {
+    .oi-source-badge {
+        font-size: 8px;
+        padding: 1px 4px;
+    }
+    
+    .badge-oi-auto,
+    .badge-oi-manual {
+        font-size: 8px;
+        padding: 1px 4px;
+    }
+    
+    .ao-icon {
+        font-size: 10px;
+        padding: 1px 3px;
+    }
+    
+    .active-open-value {
+        font-size: 14px;
+    }
+    
+    .active-open-label {
+        font-size: 11px;
+        padding: 2px 6px;
+    }
+    
+    .detail-row-highlight {
+        margin: 0 -15px;
+        padding: 8px 15px;
+    }
+    
+    #oi-coverage-badge {
+        top: 10px;
+        right: 10px;
+        font-size: 10px;
+        padding: 3px 10px;
+    }
+}
+
+/* ==================== 打印样式 ==================== */
+@media print {
+    .oi-source-badge,
+    .badge-oi-auto,
+    .badge-oi-manual,
+    .ao-icon {
+        border: 1px solid #ccc;
+        background: white !important;
+        color: black !important;
+    }
+    
+    #oi-coverage-badge {
+        display: none;
+    }
+}
+
+/* ==================== 高对比度模式 ==================== */
+@media (prefers-contrast: high) {
+    .oi-source-badge.auto {
+        border: 2px solid #00C853;
+    }
+    
+    .ao-icon.ao-buy {
+        border: 1px solid #00C853;
+    }
+    
+    .ao-icon.ao-sell {
+        border: 1px solid #FF3B30;
+    }
+}
+
+/* ==================== 深色模式支持（预留）==================== */
+@media (prefers-color-scheme: dark) {
+    .oi-source-badge.auto {
+        background: linear-gradient(135deg, #00E676 0%, #69F0AE 100%);
+        color: #1b5e20;
+    }
+    
+    .oi-source-badge.manual {
+        background: #1e3a1e;
+        color: #81c784;
+        border-color: #388e3c;
+    }
+    
+    .badge-oi-auto {
+        background: #1e3a1e;
+        color: #81c784;
+        border-color: #388e3c;
+    }
+    
+    .badge-oi-manual {
+        background: #3e2723;
+        color: #ffb74d;
+        border-color: #ff6f00;
+    }
+    
+    .detail-row-highlight {
+        background: linear-gradient(90deg, rgba(100, 181, 246, 0.15) 0%, transparent 100%);
+        border-left-color: #64b5f6;
+    }
+    
+    .active-open-label {
+        background: rgba(33, 33, 33, 0.8);
+    }
+    
+    .oi-breakdown {
+        background: #212121;
+    }
+    
+    .data-unavailable {
+        color: #757575;
+    }
+}
+
+/* ==================== Tooltip 样式（可选）==================== */
+[title] {
+    position: relative;
+    cursor: help;
+}
+
+/* 可以使用现代 CSS 添加 tooltip，但建议使用 JS 库如 tippy.js */
+
+/* ==================== OI 趋势指示器（可选扩展）==================== */
+.oi-trend {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    margin-left: 8px;
+}
+
+.oi-trend.up {
+    background: rgba(0, 200, 83, 0.1);
+    color: #00C853;
+}
+
+.oi-trend.down {
+    background: rgba(255, 59, 48, 0.1);
+    color: #FF3B30;
+}
+
+.oi-trend.flat {
+    background: rgba(158, 158, 158, 0.1);
+    color: #9E9E9E;
+}
+
+.oi-trend::before {
+    content: '';
+    display: inline-block;
+    width: 0;
+    height: 0;
+    border-style: solid;
+}
+
+.oi-trend.up::before {
+    border-width: 0 4px 6px 4px;
+    border-color: transparent transparent #00C853 transparent;
+}
+
+.oi-trend.down::before {
+    border-width: 6px 4px 0 4px;
+    border-color: #FF3B30 transparent transparent transparent;
+}
+
+.oi-trend.flat::before {
+    width: 8px;
+    height: 2px;
+    background: #9E9E9E;
+    border: none;
+}
+
+/* ==================== 加载动画（OI 获取中）==================== */
+.oi-fetching {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #1890ff;
+    font-size: 12px;
+}
+
+.oi-fetching::before {
+    content: '';
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid #1890ff;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
