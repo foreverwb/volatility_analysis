@@ -10,7 +10,7 @@
 <body>
     <div class="container">
         
-        <!-- 改进的消息通知容器 -->
+        <!-- 消息通知容器 -->
         <div class="message-container" id="messageContainer"></div>
         
         <div class="content-wrapper">
@@ -42,7 +42,6 @@
                                     <span class="quadrant-selected" id="quadrantSelected">全部</span>
                                     <span class="quadrant-arrow">▼</span>
                                 </div>
-                                <!-- [需求 2] 更新下拉菜单中的 CSS 类以匹配新的颜色逻辑 -->
                                 <div class="quadrant-dropdown" id="quadrantDropdown">
                                     <div class="quadrant-option">
                                         <input type="checkbox" id="quad-all" value="全部" checked>
@@ -108,6 +107,14 @@
         <div class="drawer-content" id="detailDrawerContent"></div>
     </div>
     
-    <script src="/static/app.js"></script>
+    <!-- 模块化 JS 加载 -->
+    <script src="/static/js/state.js"></script>
+    <script src="/static/js/ui.js"></script>
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/records.js"></script>
+    <script src="/static/js/drawer.js"></script>
+    <script src="/static/js/canvas.js"></script>
+    <script src="/static/js/filter.js"></script>
+    <script src="/static/js/main.js"></script>
 </body>
 </html>

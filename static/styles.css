@@ -1250,3 +1250,159 @@ textarea:focus {
         box-shadow: 0 0 0 0 rgba(255, 77, 79, 0);
     }
 }
+
+/* ====================  新增样式 ==================== */
+
+/* 版本标签 */
+.version-tag {
+    font-size: 11px;
+    color: #1890ff;
+    background: #e6f7ff;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+    border: 1px solid #91d5ff;
+}
+
+/* ActiveOpenRatio 徽章 - 开仓 */
+.badge-aor-bull {
+    display: inline-flex;
+    align-items: center;
+    background-color: #52c41a;
+    color: white;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    margin-left: 6px;
+    font-weight: 600;
+    vertical-align: middle;
+}
+
+/* ActiveOpenRatio 徽章 - 平仓 */
+.badge-aor-bear {
+    display: inline-flex;
+    align-items: center;
+    background-color: #faad14;
+    color: white;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    margin-left: 6px;
+    font-weight: 600;
+    vertical-align: middle;
+}
+
+/* 跨期一致性徽章 - 趋势持续 */
+.badge-consistency-bull {
+    display: inline-flex;
+    align-items: center;
+    background: linear-gradient(135deg, #52c41a 0%, #73d13d 100%);
+    color: white;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    margin-left: 6px;
+    font-weight: 700;
+    vertical-align: middle;
+    box-shadow: 0 1px 3px rgba(82, 196, 26, 0.4);
+}
+
+/* 跨期一致性徽章 - 趋势反转 */
+.badge-consistency-bear {
+    display: inline-flex;
+    align-items: center;
+    background: linear-gradient(135deg, #1890ff 0%, #40a9ff 100%);
+    color: white;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    margin-left: 6px;
+    font-weight: 700;
+    vertical-align: middle;
+    box-shadow: 0 1px 3px rgba(24, 144, 255, 0.4);
+}
+
+/*  高级指标区块标题 */
+.detail-section h3:has(+ .detail-row .detail-label:contains("主动开仓比")) {
+    color: #52c41a;
+    border-bottom-color: #52c41a;
+}
+
+/* 财报徽章样式增强 */
+.earnings-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #fa8c16;
+    color: white;
+    font-size: 9px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    margin-left: 4px;
+    font-weight: 700;
+    vertical-align: middle;
+}
+/* ==========  v2.3.3 动态参数样式 ========== */
+
+/* 参数范围提示 */
+.param-range {
+    color: #00000045;
+    font-size: 11px;
+    margin-left: 8px;
+    font-weight: normal;
+}
+
+/* 动态参数区块标题 */
+.detail-section h3:contains("🎛️") {
+    color: #722ed1;
+    border-bottom-color: #722ed1;
+}
+
+/* VIX 指数徽章 */
+.vix-badge {
+    display: inline-flex;
+    align-items: center;
+    background: linear-gradient(135deg, #fa8c16 0%, #faad14 100%);
+    color: white;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 6px;
+    font-weight: 600;
+    vertical-align: middle;
+}
+
+/* 动态参数启用/禁用标记 */
+.dynamic-params-status {
+    display: inline-flex;
+    align-items: center;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-left: 6px;
+}
+
+.dynamic-params-status.enabled {
+    background-color: #f6ffed;
+    color: #52c41a;
+    border: 1px solid #b7eb8f;
+}
+
+.dynamic-params-status.disabled {
+    background-color: #fff1f0;
+    color: #f5222d;
+    border: 1px solid #ffa39e;
+}
+
+/* v2.3.3 版本标签 */
+.version-tag-233 {
+    font-size: 11px;
+    color: #722ed1;
+    background: #f9f0ff;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+    border: 1px solid #d3adf7;
+    margin-left: 8px;
+}
