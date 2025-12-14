@@ -54,20 +54,21 @@ def load_records() -> list:
     return []
 
 
-def get_latest_record_for_symbol(symbol: str) -> Optional[Dict[str, Any]]:
+def get_latest_record_for_symbol(symbol: str, target_date: str = None) -> Optional[Dict[str, Any]]:
     """
-    获取指定 symbol 的最新分析记录
+    获取指定 symbol 的分析记录
     
     Args:
         symbol: 股票代码 (大小写不敏感)
+        target_date: 目标日期 (YYYY-MM-DD 格式)，如果为 None 则返回最新记录
         
     Returns:
-        最新的分析记录，如果不存在返回 None
+        分析记录，如果不存在返回 None
     """
     records = load_records()
     symbol_upper = symbol.upper()
     
-    # 筛选该 symbol 的所有记录，按时间排序取最新
+    # 筛选该 symbol 的所有记录
     symbol_records = [
         r for r in records 
         if r.get('symbol', '').upper() == symbol_upper
@@ -76,7 +77,22 @@ def get_latest_record_for_symbol(symbol: str) -> Optional[Dict[str, Any]]:
     if not symbol_records:
         return None
     
-    # 按 timestamp 降序排序，取最新的一条
+    # 如果指定了日期，筛选该日期的记录
+    if target_date:
+        # 支持 YYYY-MM-DD 格式
+        date_records = [
+            r for r in symbol_records
+            if r.get('timestamp', '').startswith(target_date)
+        ]
+        
+        if not date_records:
+            return None
+        
+        # 如果同一天有多条记录，取最新的
+        date_records.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        return date_records[0]
+    
+    # 未指定日期，按 timestamp 降序排序，取最新的一条
     symbol_records.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
     return symbol_records[0]
 
@@ -174,6 +190,11 @@ def register_swing_api(app):
         请求示例:
             GET /api/swing/params/NVDA
             GET /api/swing/params/NVDA?vix=18.5
+            GET /api/swing/params/NVDA?vix=18.5&date=2025-12-06
+            
+        查询参数:
+            vix: VIX 指数（可选）
+            date: 目标日期，格式 YYYY-MM-DD（可选，默认返回最新记录）
             
         响应示例:
             {
@@ -194,17 +215,42 @@ def register_swing_api(app):
         """
         symbol = symbol.upper()
         
-        # 获取最新记录
-        record = get_latest_record_for_symbol(symbol)
+        # 获取日期参数
+        target_date = request.args.get('date')
+        
+        # 验证日期格式
+        if target_date:
+            import re
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', target_date):
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid date format: {target_date}. Expected YYYY-MM-DD'
+                }), 400
+        
+        # 获取记录（支持指定日期）
+        record = get_latest_record_for_symbol(symbol, target_date)
         
         if not record:
+            error_msg = f'Symbol {symbol} not found'
+            if target_date:
+                error_msg += f' for date {target_date}'
+            
+            # 获取该 symbol 可用的日期列表
+            all_records = load_records()
+            symbol_dates = sorted(set(
+                r.get('timestamp', '')[:10]
+                for r in all_records
+                if r.get('symbol', '').upper() == symbol
+            ), reverse=True)
+            
             return jsonify({
                 'success': False,
-                'error': f'Symbol {symbol} not found in analysis records',
+                'error': error_msg,
+                'available_dates': symbol_dates[:10] if symbol_dates else None,
                 'available_symbols': list(set(
                     r.get('symbol', '').upper() 
-                    for r in load_records()
-                ))
+                    for r in all_records
+                )) if not symbol_dates else None
             }), 404
         
         # 提取参数
@@ -233,6 +279,7 @@ def register_swing_api(app):
         return jsonify({
             'success': True,
             'symbol': symbol,
+            'date': target_date or record.get('timestamp', '')[:10],
             'params': {
                 'vix': params['vix'],
                 'ivr': params['ivr'],
@@ -253,13 +300,15 @@ def register_swing_api(app):
             POST /api/swing/params/batch
             {
                 "symbols": ["NVDA", "TSLA", "AAPL"],
-                "vix": 18.5
+                "vix": 18.5,
+                "date": "2025-12-06"  // 可选，指定日期
             }
             
         响应示例:
             {
                 "success": true,
                 "vix": 18.5,
+                "date": "2025-12-06",
                 "results": {
                     "NVDA": { "ivr": 63, "iv30": 47.2, ... },
                     "TSLA": { "ivr": 35, "iv30": 55.7, ... }
@@ -272,6 +321,7 @@ def register_swing_api(app):
         data = request.json or {}
         symbols = data.get('symbols', [])
         vix = data.get('vix')
+        target_date = data.get('date')
         
         if not symbols:
             return jsonify({
@@ -279,15 +329,27 @@ def register_swing_api(app):
                 'error': 'No symbols provided'
             }), 400
         
+        # 验证日期格式
+        if target_date:
+            import re
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', target_date):
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid date format: {target_date}. Expected YYYY-MM-DD'
+                }), 400
+        
         results = {}
         errors = {}
         
         for symbol in symbols:
             symbol = symbol.upper()
-            record = get_latest_record_for_symbol(symbol)
+            record = get_latest_record_for_symbol(symbol, target_date)
             
             if not record:
-                errors[symbol] = 'Symbol not found'
+                error_msg = 'Symbol not found'
+                if target_date:
+                    error_msg += f' for date {target_date}'
+                errors[symbol] = error_msg
                 continue
             
             params = extract_swing_params(record)
@@ -308,6 +370,7 @@ def register_swing_api(app):
         return jsonify({
             'success': True,
             'vix': vix,
+            'date': target_date,
             'results': results,
             'errors': errors if errors else None
         })
@@ -337,4 +400,32 @@ def register_swing_api(app):
             'symbols': symbols,
             'count': len(symbols),
             'latest_date': latest_date
+        })
+    
+    @app.route('/api/swing/dates/<symbol>', methods=['GET'])
+    def list_symbol_dates(symbol: str):
+        """
+        列出指定 symbol 的所有可用日期
+        
+        响应示例:
+            {
+                "symbol": "NVDA",
+                "dates": ["2025-12-06", "2025-12-05", "2025-12-04"],
+                "count": 3
+            }
+        """
+        symbol = symbol.upper()
+        records = load_records()
+        
+        # 获取该 symbol 的所有日期
+        symbol_dates = sorted(set(
+            r.get('timestamp', '')[:10]
+            for r in records
+            if r.get('symbol', '').upper() == symbol and r.get('timestamp')
+        ), reverse=True)
+        
+        return jsonify({
+            'symbol': symbol,
+            'dates': symbol_dates,
+            'count': len(symbol_dates)
         })
