@@ -1,0 +1,87 @@
+/**
+ * UI 交互模块
+ * 消息提示、抽屉组件
+ */
+
+/**
+ * 显示消息提示
+ */
+function showMessage(text, type) {
+    var container = document.getElementById('messageContainer');
+    var messageBox = document.createElement('div');
+    messageBox.className = 'message-box';
+    
+    var iconMap = {
+        'success': '✓',
+        'error': '✕',
+        'warning': '!'
+    };
+    
+    var durationMap = {
+        'success': 3000,
+        'error': 4000,
+        'warning': 3500
+    };
+    
+    var duration = durationMap[type] || 3000;
+    var icon = iconMap[type] || '•';
+    
+    messageBox.innerHTML = 
+        '<div class="message-icon ' + type + '">' + icon + '</div>' +
+        '<div class="message-content">' +
+            '<span class="message-text ' + type + '">' + text + '</span>' +
+        '</div>' +
+        '<button class="message-close" onclick="this.closest(\'.message-box\').remove()">×</button>';
+    
+    container.appendChild(messageBox);
+    
+    if (duration > 0) {
+        setTimeout(function() {
+            if (messageBox.parentNode) {
+                messageBox.classList.add('hide');
+                setTimeout(function() {
+                    messageBox.remove();
+                }, 300);
+            }
+        }, duration);
+    }
+}
+
+/**
+ * 打开输入抽屉
+ */
+function openInputDrawer() {
+    document.getElementById('inputDrawerOverlay').classList.add('open');
+    document.getElementById('inputDrawer').classList.add('open');
+}
+
+/**
+ * 关闭输入抽屉
+ */
+function closeInputDrawer() {
+    document.getElementById('inputDrawerOverlay').classList.remove('open');
+    document.getElementById('inputDrawer').classList.remove('open');
+}
+
+/**
+ * 打开详情抽屉
+ */
+function openDetailDrawer() {
+    document.getElementById('detailDrawerOverlay').classList.add('open');
+    document.getElementById('detailDrawer').classList.add('open');
+}
+
+/**
+ * 关闭详情抽屉
+ */
+function closeDetailDrawer() {
+    document.getElementById('detailDrawerOverlay').classList.remove('open');
+    document.getElementById('detailDrawer').classList.remove('open');
+}
+
+// 导出到全局
+window.showMessage = showMessage;
+window.openInputDrawer = openInputDrawer;
+window.closeInputDrawer = closeInputDrawer;
+window.openDetailDrawer = openDetailDrawer;
+window.closeDetailDrawer = closeDetailDrawer;

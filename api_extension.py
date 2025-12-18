@@ -48,10 +48,18 @@ def parse_earnings_date_to_iso(earnings_str: Optional[str]) -> Optional[str]:
 
 def load_records() -> list:
     """加载分析记录"""
-    if os.path.exists(DATA_FILE):
+    if not os.path.exists(DATA_FILE):
+        return []
+    try:
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return []
+            content = f.read().strip()
+            if not content:
+                return []
+            data = json.loads(content)
+            return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"警告: 读取 {DATA_FILE} 失败: {e}")
+        return []
 
 
 def get_latest_record_for_symbol(symbol: str, target_date: str = None) -> Optional[Dict[str, Any]]:

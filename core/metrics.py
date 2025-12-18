@@ -1,0 +1,221 @@
+"""
+核心指标计算模块
+v2.3.2 - 新增 ActiveOpenRatio, Term Structure 等
+"""
+import math
+from datetime import datetime, date
+from typing import Any, Dict, Optional
+
+
+def safe_div(a: float, b: float, default: float = 0.0) -> float:
+    """安全除法"""
+    try:
+        return a / b if b != 0 else default
+    except:
+        return default
+
+
+def compute_volume_bias(rec: Dict[str, Any]) -> float:
+    """计算成交量偏度: (CallVol - PutVol) / (CallVol + PutVol)"""
+    cv = rec.get("CallVolume", 0) or 0
+    pv = rec.get("PutVolume", 0) or 0
+    return safe_div((cv - pv), (cv + pv), 0.0)
+
+
+def compute_notional_bias(rec: Dict[str, Any]) -> float:
+    """
+    计算名义金额偏度 (FlowBias)
+    FlowBias = (CallNotional - PutNotional) / (CallNotional + PutNotional)
+    """
+    cn = rec.get("CallNotional", 0) or 0.0
+    pn = rec.get("PutNotional", 0) or 0.0
+    return safe_div((cn - pn), (cn + pn), 0.0)
+
+
+def compute_callput_ratio(rec: Dict[str, Any]) -> float:
+    """计算 Call/Put 比率"""
+    cn = rec.get("CallNotional", 0) or 0.0
+    pn = rec.get("PutNotional", 0) or 0.0
+    if cn > 0 and pn > 0:
+        return safe_div(cn, pn, 1.0)
+    cv = rec.get("CallVolume", 0) or 0
+    pv = rec.get("PutVolume", 0) or 0
+    return safe_div(cv, pv, 1.0)
+
+
+def compute_ivrv(rec: Dict[str, Any]) -> float:
+    """计算 IVRV (log): ln(IV30 / HV20)"""
+    iv30 = rec.get("IV30")
+    hv20 = rec.get("HV20")
+    if not isinstance(iv30, (int, float)) or not isinstance(hv20, (int, float)):
+        return 0.0
+    if iv30 <= 0 or hv20 <= 0:
+        return 0.0
+    return math.log(iv30 / hv20)
+
+
+def compute_iv_ratio(rec: Dict[str, Any]) -> float:
+    """计算 IV/HV 比率: IV30 / HV20"""
+    iv30 = rec.get("IV30")
+    hv20 = rec.get("HV20")
+    if not isinstance(iv30, (int, float)) or not isinstance(hv20, (int, float)) or hv20 <= 0:
+        return 1.0
+    return float(iv30) / float(hv20)
+
+
+def compute_regime_ratio(rec: Dict[str, Any]) -> float:
+    """计算 Regime 比率: HV20 / HV1Y"""
+    hv20 = rec.get("HV20")
+    hv1y = rec.get("HV1Y")
+    if not isinstance(hv20, (int, float)) or not isinstance(hv1y, (int, float)) or hv1y <= 0:
+        return 1.0
+    return float(hv20) / float(hv1y)
+
+
+def compute_spot_vol_correlation_score(rec: Dict[str, Any]) -> float:
+    """
+    计算价-波相关性分数 (Spot-Vol Correlation)
+    
+    场景 A: 🔥 逼空/动量 (价升波升) -> +0.4
+    场景 B: ⚠️ 恐慌抛售 (价跌波升) -> -0.5
+    场景 C: 📈 磨涨/稳健 (价升波降) -> +0.2
+    """
+    price_chg = rec.get("PriceChgPct", 0.0) or 0.0
+    iv_chg = rec.get("IV30ChgPct", 0.0) or 0.0
+    
+    try:
+        price_chg = float(price_chg)
+        iv_chg = float(iv_chg)
+    except:
+        return 0.0
+    
+    # 场景 A: 逼空/动量 (价升波升)
+    if price_chg > 0.5 and iv_chg > 2.0:
+        return 0.4
+    # 场景 B: 恐慌抛售 (价跌波升)
+    elif price_chg < -0.5 and iv_chg > 2.0:
+        return -0.5
+    # 场景 C: 磨涨 (价升波降)
+    elif price_chg > 0 and iv_chg < -2.0:
+        return 0.2
+    return 0.0
+
+
+def detect_squeeze_potential(rec: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
+    """
+    检测 Gamma Squeeze 潜力
+    
+    条件:
+    - 期权便宜: IV30/HV20 < 0.95
+    - 仓位拥挤: OI_PctRank > 70
+    - 价格启动: PriceChgPct > 1.5%
+    - 显著放量: RelVolTo90D > 1.2
+    """
+    iv_ratio = compute_iv_ratio(rec)
+    oi_rank = rec.get("OI_PctRank", 0.0) or 0.0
+    price_chg = rec.get("PriceChgPct", 0.0) or 0.0
+    rel_vol = rec.get("RelVolTo90D", 0.0) or 0.0
+    
+    try:
+        price_chg = float(price_chg)
+        rel_vol = float(rel_vol)
+        oi_rank = float(oi_rank)
+    except:
+        return False
+    
+    if (iv_ratio < 0.95 and
+        oi_rank > 70.0 and
+        price_chg > 1.5 and
+        rel_vol > 1.2):
+        return True
+    return False
+
+
+def compute_active_open_ratio(rec: Dict[str, Any]) -> float:
+    """
+    🟩 v2.3.2 新增: 计算主动开仓比 (ActiveOpenRatio)
+    
+    ActiveOpenRatio = ΔOI_1D / TotalVolume
+    
+    TotalVolume = CallVolume + PutVolume (若 Volume 字段不存在)
+    
+    判断规则:
+    - ≥ 0.05 → 新建仓信号
+    - ≤ -0.05 → 平仓信号
+    """
+    delta_oi = rec.get("ΔOI_1D", 0) or rec.get("DeltaOI_1D", 0) or 0
+    
+    # 优先使用 Volume 字段，否则用 CallVolume + PutVolume
+    volume = rec.get("Volume")
+    if volume is None or volume == 0:
+        call_vol = rec.get("CallVolume", 0) or 0
+        put_vol = rec.get("PutVolume", 0) or 0
+        volume = call_vol + put_vol
+    
+    if volume == 0:
+        volume = 1  # 防止除零
+    
+    try:
+        delta_oi = float(delta_oi)
+        volume = float(volume)
+    except:
+        return 0.0
+    
+    return safe_div(delta_oi, volume, 0.0)
+
+
+def compute_term_structure(rec: Dict[str, Any]) -> tuple:
+    """
+    计算期限结构 (Term Structure)
+    
+    TermRatio = IV30 / IV90
+    - > 1.1 → 短端昂贵 (事件前/恐慌)
+    - < 0.9 → 正常陡峭结构
+    
+    Returns:
+        (ratio_value, ratio_string): 数值和描述字符串
+    """
+    iv30 = rec.get("IV30")
+    iv90 = rec.get("IV90")
+    
+    if isinstance(iv30, (int, float)) and isinstance(iv90, (int, float)) and iv90 > 0:
+        ratio = iv30 / iv90
+        ratio_str = f"{ratio:.2f}"
+        if ratio > 1.1:
+            ratio_str += " (倒挂/恐慌)"
+        elif ratio < 0.9:
+            ratio_str += " (陡峭/正常)"
+        return (ratio, ratio_str)
+    return (None, "N/A")
+
+
+def parse_earnings_date(s: Optional[str]) -> Optional[date]:
+    """
+    解析财报日期字符串
+    
+    支持格式:
+    - "22-Oct-2025 BMO"
+    - "19-Nov-2025 AMC"
+    - "22 Oct 2025"
+    """
+    if not s or not isinstance(s, str):
+        return None
+    t = s.strip()
+    parts = t.split()
+    if len(parts) >= 2 and parts[-1] in ("AMC", "BMO"):
+        t = " ".join(parts[:-1])
+    t = t.replace("  ", " ")
+    for fmt in ("%d-%b-%Y", "%d %b %Y", "%d-%b-%y", "%d %b %y"):
+        try:
+            return datetime.strptime(t, fmt).date()
+        except:
+            continue
+    return None
+
+
+def days_until(d: Optional[date], as_of: Optional[date] = None) -> Optional[int]:
+    """计算距离目标日期的天数"""
+    if d is None:
+        return None
+    as_of = as_of or date.today()
+    return (d - as_of).days
