@@ -60,7 +60,81 @@ function updateQuadrantDisplay() {
     }
 }
 
+/**
+ * 处理排序变化
+ */
+function handleSortChange() {
+    var sortSelect = document.getElementById('sortFilterSelect');
+    AppState.sortBy = sortSelect.value;
+    renderRecordsList();
+}
+
+/**
+ * 处理标的筛选变化
+ */
+function handleSymbolFilterChange() {
+    var input = document.getElementById('symbolFilterInput');
+    var value = input.value.trim();
+    
+    if (value === '') {
+        AppState.symbolFilter = [];
+    } else {
+        // 以逗号分隔，去除空白，转换为大写以便不区分大小写匹配
+        AppState.symbolFilter = value.split(',')
+            .map(function(s) { return s.trim().toUpperCase(); })
+            .filter(function(s) { return s.length > 0; });
+    }
+    
+    renderRecordsList();
+}
+
+/**
+ * 根据标的筛选记录
+ */
+function filterBySymbol(records) {
+    if (!AppState.symbolFilter || AppState.symbolFilter.length === 0) {
+        return records;
+    }
+    
+    return records.filter(function(record) {
+        var symbol = (record.symbol || '').toUpperCase();
+        // 检查是否匹配任一筛选条件（支持部分匹配）
+        return AppState.symbolFilter.some(function(filter) {
+            return symbol.indexOf(filter) !== -1;
+        });
+    });
+}
+
+/**
+ * 根据排序设置对记录进行排序
+ */
+function sortRecords(records) {
+    if (!AppState.sortBy || records.length === 0) {
+        return records;
+    }
+    
+    var sortedRecords = records.slice();
+    
+    if (AppState.sortBy === 'direction') {
+        // 按方向得分从高到低排序
+        sortedRecords.sort(function(a, b) {
+            return (b.direction_score || 0) - (a.direction_score || 0);
+        });
+    } else if (AppState.sortBy === 'volatility') {
+        // 按波动得分从高到低排序
+        sortedRecords.sort(function(a, b) {
+            return (b.vol_score || 0) - (a.vol_score || 0);
+        });
+    }
+    
+    return sortedRecords;
+}
+
 // 导出到全局
 window.toggleQuadrantDropdown = toggleQuadrantDropdown;
 window.handleQuadrantChange = handleQuadrantChange;
 window.updateQuadrantDisplay = updateQuadrantDisplay;
+window.handleSortChange = handleSortChange;
+window.sortRecords = sortRecords;
+window.handleSymbolFilterChange = handleSymbolFilterChange;
+window.filterBySymbol = filterBySymbol;

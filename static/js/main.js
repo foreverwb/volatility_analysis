@@ -41,6 +41,8 @@ window.onload = function() {
     document.getElementById('detailDrawerOverlay').addEventListener('click', closeDetailDrawer);
     document.getElementById('btnCloseDetailDrawer').addEventListener('click', closeDetailDrawer);
     document.getElementById('inputDrawerOverlay').addEventListener('click', closeInputDrawer);
+    document.getElementById('sortFilterSelect').addEventListener('change', handleSortChange);
+    document.getElementById('symbolFilterInput').addEventListener('input', handleSymbolFilterChange);
     
     // 象限筛选
     var allCheckbox = document.getElementById('quad-all');

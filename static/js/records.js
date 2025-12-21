@@ -51,8 +51,11 @@ function renderRecordsList() {
         return;
     }
     
+    // 先进行标的筛选
+    var filteredRecords = filterBySymbol(AppState.allRecords);
+    
     var groupedByDate = {};
-    AppState.allRecords.forEach(function(record) {
+    filteredRecords.forEach(function(record) {
         var date = record.timestamp.split(' ')[0];
         if (AppState.currentFilter && date !== AppState.currentFilter) return;
         if (!groupedByDate[date]) groupedByDate[date] = [];
@@ -73,6 +76,11 @@ function renderRecordsList() {
             });
             if (groupedByDate[date].length === 0) delete groupedByDate[date];
         }
+    }
+    
+    // 对每个日期组内的记录进行排序
+    for (var date in groupedByDate) {
+        groupedByDate[date] = sortRecords(groupedByDate[date]);
     }
 
     var sortedDates = Object.keys(groupedByDate).sort().reverse();

@@ -30,6 +30,10 @@
                 <div class="date-filter">
                     <div class="filter-row">
                         <div class="filter-group">
+                            <label class="filter-label">标的搜索</label>
+                            <input type="text" id="symbolFilterInput" class="symbol-filter-input" placeholder="输入标的，多个以逗号分隔">
+                        </div>
+                        <div class="filter-group">
                             <label class="filter-label">日期筛选</label>
                             <select id="dateFilterSelect">
                                 <option value="">全部日期</option>
@@ -69,6 +73,14 @@
                                     </div>
                                 </div>
                             </div>
+                        </div>
+                        <div class="filter-group">
+                            <label class="filter-label">排序筛选</label>
+                            <select id="sortFilterSelect">
+                                <option value="">默认排序</option>
+                                <option value="direction">方向（高→低）</option>
+                                <option value="volatility">波动（高→低）</option>
+                            </select>
                         </div>
                     </div>
                 </div>
