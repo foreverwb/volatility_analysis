@@ -26,6 +26,15 @@ async function analyzeData() {
             showMessage('数据数组不能为空', 'error');
             return;
         }
+
+        //显示进度提示
+        var symbolCount = new Set(records.map(r => r.symbol)).size;
+        var estimatedTime = Math.ceil(symbolCount / 8 * 3); // 粗略估算
+        
+        showMessage(
+            `正在获取 ${symbolCount} 个标的的 OI 数据，预计 ${estimatedTime} 秒...`, 
+            'warning'
+        );
         
         var response = await fetch('/api/analyze', {
             method: 'POST',
@@ -36,6 +45,14 @@ async function analyzeData() {
         var result = await response.json();
         
         if (response.ok) {
+            // 🟩 显示 OI 统计信息
+            var oiStats = result.oi_stats || {};
+            var message = result.message;
+            
+            if (oiStats.with_delta) {
+                message += ` (OI数据: ${oiStats.with_delta}/${oiStats.total})`;
+            }
+            
             showMessage(result.message, 'success');
             document.getElementById('dataInput').value = '';
             closeInputDrawer();

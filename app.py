@@ -18,7 +18,7 @@ from core import (
     DEFAULT_CFG,
     calculate_analysis
 )
-
+from core.oi_fetcher import batch_fetch_oi, auto_tune_workers, estimate_fetch_time
 app = Flask(__name__)
 
 DATA_FILE = 'analysis_records.json'
@@ -156,12 +156,37 @@ def analyze():
         if len(records) == 0:
             return jsonify({'error': '数据列表不能为空'}), 400
         
+        # 提取所有 symbol
+        symbols = list(set(r.get('symbol', '') for r in records if r.get('symbol')))
+        num_symbols = len(symbols)
+        
+        # 自动调整并发数
+        max_workers = auto_tune_workers(num_symbols)
+        estimated_time = estimate_fetch_time(num_symbols, max_workers)
+        
+        print(f"\n{'='*60}")
+        print(f"📊 OI 数据获取配置:")
+        print(f"   - 标的数量: {num_symbols}")
+        print(f"   - 并发线程: {max_workers}")
+        print(f"   - 预计耗时: {estimated_time:.1f}s")
+        print(f"{'='*60}\n")
+        
+         # 批量获取 OI 数据（多线程）
+        oi_data = batch_fetch_oi(symbols, max_workers=max_workers)
+        
         results = []
         errors = []
         
         for i, record in enumerate(records):
             try:
                 symbol = record.get('symbol', '')
+                
+                # 注入 OI 数据
+                if symbol in oi_data:
+                    current_oi, delta_oi = oi_data[symbol]
+                    if delta_oi is not None:
+                        record['ΔOI_1D'] = delta_oi
+                        
                 # 获取历史评分用于跨期一致性计算
                 history_scores = get_history_scores(symbol)
                 
@@ -176,6 +201,7 @@ def analyze():
                 errors.append(error_msg)
                 print(f"错误: {error_msg}")
         
+        # 保存数据
         if results:
             all_data = load_data()
             new_records_map = {}
@@ -203,7 +229,12 @@ def analyze():
         return jsonify({
             'message': message,
             'results': results,
-            'errors': errors if errors else None
+            'errors': errors if errors else None,
+            'oi_stats': {
+                'total': num_symbols,
+                'success': sum(1 for s in symbols if oi_data.get(s, (None, None))[0] is not None),
+                'with_delta': sum(1 for s in symbols if oi_data.get(s, (None, None))[1] is not None)
+            }
         }), 201
     
     except Exception as e:

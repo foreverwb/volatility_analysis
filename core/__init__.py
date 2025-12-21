@@ -33,7 +33,10 @@ from .market_data import (
     get_current_vix, get_vix_history, get_vix_with_fallback,
     validate_vix, get_vix_info, clear_vix_cache
 )
-
+from .oi_fetcher import (
+    fetch_total_oi, get_oi_with_delta, batch_fetch_oi,
+    get_oi_info, clear_oi_cache
+)
 __all__ = [
     # 配置
     'DEFAULT_CFG', 'INDEX_TICKERS', 'get_dynamic_thresholds', 'validate_config',
@@ -71,6 +74,10 @@ __all__ = [
     # v2.3.3: 市场数据
     'get_current_vix', 'get_vix_history', 'get_vix_with_fallback',
     'validate_vix', 'get_vix_info', 'clear_vix_cache',
+    
+    # v2.3.3: OI 数据
+    'fetch_total_oi', 'get_oi_with_delta', 'batch_fetch_oi',
+    'get_oi_info', 'clear_oi_cache',
 ]
 
 __version__ = '2.3.3'
