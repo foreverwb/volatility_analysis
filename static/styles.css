@@ -1433,3 +1433,222 @@ textarea:focus {
     border: 1px solid #d3adf7;
     margin-left: 8px;
 }
+/* ==================== Loading 组件样式 ==================== */
+/* 添加到 static/styles.css 文件末尾 */
+
+.loading-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(8px);
+    z-index: 10000;
+    align-items: center;
+    justify-content: center;
+}
+
+.loading-overlay.active {
+    display: flex;
+    animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+.loading-container {
+    background: white;
+    border-radius: 16px;
+    padding: 40px 50px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    text-align: center;
+    min-width: 320px;
+    max-width: 90vw;
+    animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateY(30px) scale(0.9);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+/* 三环旋转加载器 */
+.loading-spinner {
+    position: relative;
+    width: 80px;
+    height: 80px;
+    margin: 0 auto 25px;
+}
+
+.spinner-ring {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    border: 4px solid transparent;
+    border-top-color: #1890ff;
+    border-radius: 50%;
+    animation: spin 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+}
+
+.spinner-ring:nth-child(1) {
+    animation-delay: -0.45s;
+    border-top-color: #1890ff;
+}
+
+.spinner-ring:nth-child(2) {
+    animation-delay: -0.3s;
+    border-top-color: #40a9ff;
+    width: 70%;
+    height: 70%;
+    top: 15%;
+    left: 15%;
+}
+
+.spinner-ring:nth-child(3) {
+    animation-delay: -0.15s;
+    border-top-color: #91d5ff;
+    width: 40%;
+    height: 40%;
+    top: 30%;
+    left: 30%;
+}
+
+@keyframes spin {
+    0% {
+        transform: rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+/* 加载文本 */
+.loading-text {
+    font-size: 18px;
+    font-weight: 600;
+    color: #000000d9;
+    margin-bottom: 20px;
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.6;
+    }
+}
+
+/* 进度条 */
+.loading-progress {
+    margin-bottom: 15px;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 8px;
+    background: #f0f0f0;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #1890ff 0%, #40a9ff 100%);
+    border-radius: 4px;
+    transition: width 0.3s ease-out;
+    width: 0%;
+    position: relative;
+    overflow: hidden;
+}
+
+.progress-fill::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.3),
+        transparent
+    );
+    animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+    0% {
+        transform: translateX(-100%);
+    }
+    100% {
+        transform: translateX(100%);
+    }
+}
+
+/* 进度统计 */
+.progress-stats {
+    font-size: 24px;
+    font-weight: 700;
+    color: #1890ff;
+    letter-spacing: 1px;
+}
+
+.progress-current {
+    color: #52c41a;
+    font-size: 28px;
+}
+
+.progress-total {
+    color: #00000045;
+}
+
+/* 提示文本 */
+.loading-tip {
+    font-size: 13px;
+    color: #00000045;
+    margin-top: 15px;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+    .loading-container {
+        padding: 30px 35px;
+        min-width: 280px;
+    }
+    
+    .loading-spinner {
+        width: 60px;
+        height: 60px;
+        margin-bottom: 20px;
+    }
+    
+    .loading-text {
+        font-size: 16px;
+    }
+    
+    .progress-stats {
+        font-size: 20px;
+    }
+    
+    .progress-current {
+        font-size: 24px;
+    }
+}

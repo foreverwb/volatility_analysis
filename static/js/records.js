@@ -122,7 +122,9 @@ function renderRecordsList() {
         records.forEach(function(record) {
             var quadrantClass = getQuadrantClass(record.quadrant);
             var daysToEarnings = record.derived_metrics ? record.derived_metrics.days_to_earnings : null;
-            var showEarnings = daysToEarnings !== null && daysToEarnings > 0;
+            var showEarnings = daysToEarnings !== null && 
+                  daysToEarnings > 0 && 
+                  daysToEarnings <= AppState.earningsDisplayThreshold;
             var eventBadge = record.earnings_event_enabled ? '<span class="earnings-badge">E</span>' : '';
             
             //  新增标记

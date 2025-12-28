@@ -5,6 +5,87 @@
 /**
  * 分析数据
  */
+// async function analyzeData() {
+//     var input = document.getElementById('dataInput').value.trim();
+    
+//     if (!input) {
+//         showMessage('请输入数据', 'error');
+//         return;
+//     }
+    
+//     try {
+//         input = input.replace(/^\s*\w+\s*=\s*/, '').replace(/;\s*$/, '');
+//         var records = JSON.parse(input);
+        
+//         if (!Array.isArray(records)) {
+//             showMessage('数据必须是数组格式', 'error');
+//             return;
+//         }
+        
+//         if (records.length === 0) {
+//             showMessage('数据数组不能为空', 'error');
+//             return;
+//         }
+
+//         //显示进度提示
+//         var symbolCount = new Set(records.map(r => r.symbol)).size;
+//         var estimatedTime = Math.ceil(symbolCount / 8 * 3); // 粗略估算
+        
+//         showMessage(
+//             `正在获取 ${symbolCount} 个标的的 OI 数据，预计 ${estimatedTime} 秒...`, 
+//             'warning'
+//         );
+        
+//         var response = await fetch('/api/analyze', {
+//             method: 'POST',
+//             headers: {'Content-Type': 'application/json'},
+//             body: JSON.stringify({ records: records })
+//         });
+        
+//         var result = await response.json();
+        
+//         if (response.ok) {
+//             // 🟩 显示 OI 统计信息
+//             var oiStats = result.oi_stats || {};
+//             var message = result.message;
+            
+//             if (oiStats.with_delta) {
+//                 message += ` (OI数据: ${oiStats.with_delta}/${oiStats.total})`;
+//             }
+            
+//             showMessage(result.message, 'success');
+//             document.getElementById('dataInput').value = '';
+//             closeInputDrawer();
+            
+//             var newDates = new Set();
+//             if (result.results && Array.isArray(result.results)) {
+//                 result.results.forEach(function(r) {
+//                     var date = r.timestamp.split(' ')[0];
+//                     newDates.add(date);
+//                 });
+//                 AppState.canvasRecords.push.apply(AppState.canvasRecords, result.results);
+//             }
+            
+//             await loadRecords();
+//             await loadDates();
+            
+//             newDates.forEach(function(date) {
+//                 AppState.expandedDates.add(date);
+//                 var content = document.getElementById('content-' + date);
+//                 var toggle = document.getElementById('toggle-' + date);
+//                 if (content && toggle) {
+//                     content.classList.add('expanded');
+//                     toggle.classList.add('expanded');
+//                 }
+//             });
+//         } else {
+//             showMessage(result.error || '分析失败', 'error');
+//         }
+//     } catch (e) {
+//         showMessage('数据格式错误: ' + e.message, 'error');
+//     }
+// }
+
 async function analyzeData() {
     var input = document.getElementById('dataInput').value.trim();
     
@@ -27,65 +108,193 @@ async function analyzeData() {
             return;
         }
 
-        //显示进度提示
+        // 计算标的数量
         var symbolCount = new Set(records.map(r => r.symbol)).size;
-        var estimatedTime = Math.ceil(symbolCount / 8 * 3); // 粗略估算
         
-        showMessage(
-            `正在获取 ${symbolCount} 个标的的 OI 数据，预计 ${estimatedTime} 秒...`, 
-            'warning'
-        );
+        // 🟢 显示 Loading
+        showLoading('正在初始化...', symbolCount);
+        closeInputDrawer();
         
-        var response = await fetch('/api/analyze', {
+        console.log('🚀 开始流式请求...');
+        
+        // 🟢 创建 POST 请求获取流式响应
+        var response = await fetch('/api/analyze/stream', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream'
+            },
             body: JSON.stringify({ records: records })
         });
         
-        var result = await response.json();
-        
-        if (response.ok) {
-            // 🟩 显示 OI 统计信息
-            var oiStats = result.oi_stats || {};
-            var message = result.message;
-            
-            if (oiStats.with_delta) {
-                message += ` (OI数据: ${oiStats.with_delta}/${oiStats.total})`;
-            }
-            
-            showMessage(result.message, 'success');
-            document.getElementById('dataInput').value = '';
-            closeInputDrawer();
-            
-            var newDates = new Set();
-            if (result.results && Array.isArray(result.results)) {
-                result.results.forEach(function(r) {
-                    var date = r.timestamp.split(' ')[0];
-                    newDates.add(date);
-                });
-                AppState.canvasRecords.push.apply(AppState.canvasRecords, result.results);
-            }
-            
-            await loadRecords();
-            await loadDates();
-            
-            newDates.forEach(function(date) {
-                AppState.expandedDates.add(date);
-                var content = document.getElementById('content-' + date);
-                var toggle = document.getElementById('toggle-' + date);
-                if (content && toggle) {
-                    content.classList.add('expanded');
-                    toggle.classList.add('expanded');
-                }
-            });
-        } else {
-            showMessage(result.error || '分析失败', 'error');
+        if (!response.ok) {
+            throw new Error('请求失败: ' + response.status);
         }
+        
+        console.log('✓ 连接建立');
+        
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        
+        // 🟢 读取流
+        var loopCount = 0;
+        while (true) {
+            var readResult = await reader.read();
+            loopCount++;
+            
+            if (readResult.done) {
+                console.log('✓ 流读取完成，总循环次数:', loopCount);
+                break;
+            }
+            
+            // 🟢 解码新数据
+            buffer += decoder.decode(readResult.value, { stream: true });
+            
+            // 🟢 处理完整的消息（以 \n\n 分隔）
+            var lines = buffer.split('\n');
+            
+            // 保留最后一行（可能不完整）
+            buffer = lines.pop() || '';
+            
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i].trim();
+                
+                // 跳过空行和非 data 行
+                if (!line || !line.startsWith('data:')) {
+                    continue;
+                }
+                
+                try {
+                    // 🟢 解析 JSON 数据
+                    var jsonStr = line.substring(5).trim(); // 移除 "data:" 前缀
+                    
+                    if (!jsonStr) continue;
+                    
+                    var data = JSON.parse(jsonStr);
+                    
+                    console.log('📦 收到事件:', data.type, data);
+                    
+                    // 🟢 根据事件类型处理
+                    switch (data.type) {
+                        case 'init':
+                            console.log('✓ 初始化，总数:', data.total);
+                            updateLoadingProgress(0, data.total, '正在初始化...');
+                            break;
+                            
+                        case 'info':
+                            console.log('✓ 配置信息:', {
+                                workers: data.workers,
+                                estimated_time: data.estimated_time
+                            });
+                            updateLoadingProgress(
+                                0, 
+                                symbolCount, 
+                                `正在获取 OI 数据（预计 ${Math.ceil(data.estimated_time)} 秒）...`
+                            );
+                            break;
+                            
+                        case 'progress':
+                            // 🟢 实时更新进度
+                            console.log(`📈 进度更新: ${data.completed}/${data.total} (${data.percentage}%) - ${data.symbol}`);
+                            updateLoadingProgress(
+                                data.completed, 
+                                data.total, 
+                                `正在获取 OI 数据: ${data.symbol} (${data.percentage}%)`
+                            );
+                            break;
+                            
+                        case 'oi_complete':
+                            console.log('✓ OI 获取完成，成功:', data.success);
+                            updateLoadingProgress(
+                                symbolCount, 
+                                symbolCount, 
+                                '开始分析数据...'
+                            );
+                            break;
+                            
+                        case 'analyze_progress':
+                            console.log(`📊 分析进度: ${data.completed}/${data.total}`);
+                            updateLoadingProgress(
+                                data.completed, 
+                                data.total, 
+                                `正在分析数据 (${data.completed}/${data.total})...`
+                            );
+                            break;
+                            
+                        case 'complete':
+                            console.log('✅ 全部完成');
+                            // 分析完成
+                            updateLoadingProgress(symbolCount, symbolCount, '数据处理完成');
+                            
+                            // 等待一小段时间让用户看到100%
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            
+                            // 隐藏 Loading
+                            hideLoading();
+                            
+                            // 处理结果
+                            var oiStats = data.oi_stats || {};
+                            var message = data.message;
+                            
+                            if (oiStats.with_delta) {
+                                message += ` (OI数据: ${oiStats.with_delta}/${oiStats.total})`;
+                            }
+                            
+                            showMessage(message, 'success');
+                            document.getElementById('dataInput').value = '';
+                            
+                            var newDates = new Set();
+                            if (data.results && Array.isArray(data.results)) {
+                                data.results.forEach(function(r) {
+                                    var date = r.timestamp.split(' ')[0];
+                                    newDates.add(date);
+                                });
+                                
+                                // 🔴 先清空画布，再添加新数据
+                                AppState.canvasRecords = data.results;
+                            }
+                            
+                            await loadRecords();
+                            await loadDates();
+                            
+                            // 重绘画布
+                            drawQuadrant();
+                            
+                            newDates.forEach(function(date) {
+                                AppState.expandedDates.add(date);
+                                var content = document.getElementById('content-' + date);
+                                var toggle = document.getElementById('toggle-' + date);
+                                if (content && toggle) {
+                                    content.classList.add('expanded');
+                                    toggle.classList.add('expanded');
+                                }
+                            });
+                            break;
+                            
+                        case 'error':
+                            console.error('❌ 服务器错误:', data.error);
+                            hideLoading();
+                            showMessage(data.error || '分析失败', 'error');
+                            return;
+                            
+                        default:
+                            console.warn('⚠ 未知事件类型:', data.type);
+                    }
+                } catch (e) {
+                    console.error('❌ 解析消息失败:', e, '原始数据:', line);
+                }
+            }
+        }
+        
+        console.log('✅ 数据分析流程完成');
+        
     } catch (e) {
-        showMessage('数据格式错误: ' + e.message, 'error');
+        console.error('❌ 请求异常:', e);
+        hideLoading();
+        showMessage('请求失败: ' + e.message, 'error');
     }
 }
-
 /**
  * 加载记录
  */
@@ -294,7 +503,8 @@ async function handleEarningsToggle(checkbox) {
 }
 
 // 导出到全局
-window.analyzeData = analyzeData;
+// window.analyzeData = analyzeData;
+window.analyzeData = analyzeDataWithSSE;
 window.loadRecords = loadRecords;
 window.loadDates = loadDates;
 window.deleteRecord = deleteRecord;

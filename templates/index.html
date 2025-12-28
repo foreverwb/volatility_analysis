@@ -91,6 +91,28 @@
             </div>
         </div>
     </div>
+    <!-- 全屏 Loading 遮罩 -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-container">
+            <div class="loading-spinner">
+                <div class="spinner-ring"></div>
+                <div class="spinner-ring"></div>
+                <div class="spinner-ring"></div>
+            </div>
+            <div class="loading-text" id="loadingText">正在获取数据...</div>
+            <div class="loading-progress">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-stats" id="progressStats">
+                    <span class="progress-current" id="progressCurrent">0</span>
+                    /
+                    <span class="progress-total" id="progressTotal">0</span>
+                </div>
+            </div>
+            <div class="loading-tip">请稍候，正在处理中...</div>
+        </div>
+    </div>
     
     <!-- 数据输入 Drawer -->
     <div class="drawer-overlay" id="inputDrawerOverlay"></div>

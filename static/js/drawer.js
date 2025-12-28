@@ -20,7 +20,9 @@ function showDrawer(timestamp, symbol) {
     var confidenceBadge = getBadgeClass(record.confidence);
     var quadrantClass = getQuadrantClass(record.quadrant);
     var daysToEarnings = record.derived_metrics ? record.derived_metrics.days_to_earnings : null;
-    var showEarnings = daysToEarnings !== null && daysToEarnings > 0;
+    var showEarnings = daysToEarnings !== null && 
+                  daysToEarnings > 0 && 
+                  daysToEarnings <= AppState.earningsDisplayThreshold;
     
     // 高级指标数据
     var spotVolCorr = record.spot_vol_corr_score || 0;

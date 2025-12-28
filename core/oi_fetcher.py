@@ -4,13 +4,14 @@ Data Source: Yahoo Finance (yfinance)
 """
 import yfinance as yf
 import pandas as pd
-from typing import Optional, Tuple, Dict, List
+from typing import Optional, Tuple, Dict, List, Callable
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import time
 import threading
+from queue import Queue, Empty
 
 OI_CACHE_FILE = "oi_cache.json"
 CACHE_LOCK = threading.Lock()  # 缓存文件锁
@@ -159,23 +160,31 @@ def _fetch_single_symbol(symbol: str, retry_count: int = 0) -> Tuple[str, Option
 def batch_fetch_oi(
     symbols: List[str], 
     max_workers: int = DEFAULT_MAX_WORKERS,
-    progress_callback = None
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    progress_queue: Optional[Queue] = None  # 🟢 新增：线程安全的进度队列
 ) -> Dict[str, Tuple[Optional[int], Optional[int]]]:
     """
-    批量获取多个标的的 OI 数据（多线程并发）
+    批量获取多个标的的 OI 数据（多线程并发）- 线程安全版本
     
     Args:
         symbols: 标的列表
-        max_workers: 最大并发线程数（推荐 5-10）
-        progress_callback: 进度回调函数 callback(completed, total, symbol)
+        max_workers: 最大并发线程数
+        progress_callback: 进度回调函数（在主线程中调用，传统方式）
+        progress_queue: 进度队列（用于 SSE 流式推送，线程安全）
         
     Returns:
         {symbol: (current_oi, delta_oi_1d)}
         
-    示例：
-        >>> def on_progress(completed, total, symbol):
-        ...     print(f"[{completed}/{total}] {symbol}")
-        >>> results = batch_fetch_oi(["AAPL", "TSLA"], progress_callback=on_progress)
+    使用示例：
+        # 方式1：传统回调（适用于同步场景）
+        >>> results = batch_fetch_oi(symbols, progress_callback=on_progress)
+        
+        # 方式2：队列模式（适用于 SSE 流式推送）
+        >>> progress_queue = Queue()
+        >>> results = batch_fetch_oi(symbols, progress_queue=progress_queue)
+        >>> while not progress_queue.empty():
+        ...     progress = progress_queue.get()
+        ...     yield f"data: {json.dumps(progress)}\n\n"
     """
     if not symbols:
         return {}
@@ -204,7 +213,7 @@ def batch_fetch_oi(
                 
                 completed += 1
                 
-                # 状态输出
+                # 状态输出（控制台）
                 if delta_oi is not None:
                     sign = "+" if delta_oi > 0 else ""
                     print(f"✓ [{completed}/{total}] {symbol}: OI={current_oi:,}, ΔOI={sign}{delta_oi:,}")
@@ -213,20 +222,58 @@ def batch_fetch_oi(
                 else:
                     print(f"❌ [{completed}/{total}] {symbol}: Failed to fetch OI")
                 
-                # 进度回调
-                if progress_callback:
-                    progress_callback(completed, total, symbol)
+                # 🟢 线程安全的进度通知
+                progress_data = {
+                    'completed': completed,
+                    'total': total,
+                    'symbol': symbol,
+                    'current_oi': current_oi,
+                    'delta_oi': delta_oi
+                }
+                
+                # 方式1：使用队列（优先，线程安全）
+                if progress_queue is not None:
+                    try:
+                        progress_queue.put(progress_data, block=False)
+                    except Exception as e:
+                        print(f"⚠ Warning: Failed to put progress to queue: {e}")
+                
+                # 方式2：使用回调（传统方式，非线程安全，仅适用于同步场景）
+                if progress_callback is not None:
+                    try:
+                        progress_callback(completed, total, symbol)
+                    except Exception as e:
+                        print(f"⚠ Warning: Progress callback failed: {e}")
             
             except Exception as e:
                 completed += 1
                 print(f"❌ [{completed}/{total}] {symbol}: {str(e)[:50]}")
                 results[symbol] = (None, None)
+                
+                # 即使失败也要通知进度
+                if progress_queue is not None:
+                    try:
+                        progress_queue.put({
+                            'completed': completed,
+                            'total': total,
+                            'symbol': symbol,
+                            'error': str(e)
+                        }, block=False)
+                    except:
+                        pass
     
     elapsed = time.time() - start_time
     success_count = sum(1 for _, (oi, _) in results.items() if oi is not None)
     
     print(f"\n📊 OI fetch completed: {success_count}/{total} successful in {elapsed:.1f}s")
     print(f"   Average: {elapsed/total:.2f}s per symbol")
+    
+    # 🟢 发送完成信号到队列
+    if progress_queue is not None:
+        try:
+            progress_queue.put({'type': 'complete'}, block=False)
+        except:
+            pass
     
     return results
 

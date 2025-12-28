@@ -7,12 +7,14 @@ Flask 主应用入口
 2. 修正历史评分获取函数的位置
 3. 确保所有依赖正确导入
 """
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory, Response, stream_with_context
 import json
 import os
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 from collections import defaultdict
+from queue import Queue, Empty
+import threading
 
 from core import (
     DEFAULT_CFG,
@@ -341,6 +343,201 @@ def update_config():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/analyze/stream', methods=['POST'])
+def analyze_stream():
+    """
+    流式分析接口 - 修复版本
+    
+    修复内容：
+    1. 使用 Queue 实现线程安全的进度通知
+    2. 在后台线程执行 OI 获取，主线程负责 SSE 推送
+    3. 解决进度一直为 0 的问题
+    
+    POST /api/analyze/stream?ignore_earnings=false
+    Body: { "records": [...] }
+    
+    返回 Server-Sent Events (SSE) 流
+    """
+    def generate():
+        try:
+            ignore_earnings = request.args.get('ignore_earnings', 'false').lower() == 'true'
+            records = request.json.get('records', [])
+            
+            if not isinstance(records, list) or len(records) == 0:
+                yield f"data: {json.dumps({'type': 'error', 'error': '数据格式错误'})}\n\n"
+                return
+            
+            # 提取所有 symbol
+            symbols = list(set(r.get('symbol', '') for r in records if r.get('symbol')))
+            num_symbols = len(symbols)
+            
+            # 🟢 发送初始化消息
+            yield f"data: {json.dumps({'type': 'init', 'total': num_symbols})}\n\n"
+            
+            # 自动调整并发数
+            max_workers = auto_tune_workers(num_symbols)
+            estimated_time = estimate_fetch_time(num_symbols, max_workers)
+            
+            yield f"data: {json.dumps({'type': 'info', 'workers': max_workers, 'estimated_time': estimated_time})}\n\n"
+            
+            # 🟢 创建进度队列（线程安全）
+            progress_queue = Queue()
+            oi_data = {}
+            fetch_error = None
+            
+            # 🟢 在后台线程执行 OI 获取
+            def fetch_oi_task():
+                nonlocal oi_data, fetch_error
+                try:
+                    oi_data = batch_fetch_oi(
+                        symbols, 
+                        max_workers=max_workers,
+                        progress_queue=progress_queue  # 传入队列
+                    )
+                except Exception as e:
+                    fetch_error = str(e)
+                    progress_queue.put({'type': 'error', 'error': str(e)})
+            
+            # 启动后台线程
+            fetch_thread = threading.Thread(target=fetch_oi_task)
+            fetch_thread.start()
+            
+            # 🟢 主线程持续读取队列并推送进度
+            oi_fetch_complete = False
+            
+            while not oi_fetch_complete or not progress_queue.empty():
+                try:
+                    # 从队列获取进度（超时 0.5 秒）
+                    progress_data = progress_queue.get(timeout=0.5)
+                    
+                    if progress_data.get('type') == 'complete':
+                        # OI 获取完成
+                        oi_fetch_complete = True
+                        yield f"data: {json.dumps({
+                            'type': 'oi_complete', 
+                            'success': sum(1 for s in symbols if oi_data.get(s, (None, None))[0] is not None)
+                        })}\n\n"
+                        break
+                    
+                    elif progress_data.get('type') == 'error':
+                        # 发生错误
+                        yield f"data: {json.dumps(progress_data)}\n\n"
+                        return
+                    
+                    else:
+                        # 🟢 正常进度更新
+                        yield f"data: {json.dumps({
+                            'type': 'progress',
+                            'completed': progress_data['completed'],
+                            'total': progress_data['total'],
+                            'symbol': progress_data['symbol'],
+                            'percentage': round((progress_data['completed'] / progress_data['total']) * 100, 1)
+                        })}\n\n"
+                
+                except Empty:
+                    # 队列为空，检查线程是否还在运行
+                    if not fetch_thread.is_alive():
+                        oi_fetch_complete = True
+                        break
+                    continue
+            
+            # 等待线程结束
+            fetch_thread.join(timeout=5)
+            
+            if fetch_error:
+                yield f"data: {json.dumps({'type': 'error', 'error': fetch_error})}\n\n"
+                return
+            
+            # 🟢 开始分析数据
+            results = []
+            errors = []
+            
+            for i, record in enumerate(records):
+                try:
+                    symbol = record.get('symbol', '')
+                    
+                    # 注入 OI 数据
+                    if symbol in oi_data:
+                        current_oi, delta_oi = oi_data[symbol]
+                        if delta_oi is not None:
+                            record['ΔOI_1D'] = delta_oi
+                    
+                    # 获取历史评分
+                    history_scores = get_history_scores(symbol)
+                    
+                    analysis = calculate_analysis(
+                        record,
+                        ignore_earnings=ignore_earnings,
+                        history_scores=history_scores
+                    )
+                    results.append(analysis)
+                    
+                    # 🟢 发送单条分析完成（可选）
+                    if i % 5 == 0 or i == len(records) - 1:  # 每 5 条或最后一条发送一次
+                        yield f"data: {json.dumps({
+                            'type': 'analyze_progress', 
+                            'completed': i + 1, 
+                            'total': len(records)
+                        })}\n\n"
+                    
+                except Exception as e:
+                    error_msg = f"标的 {record.get('symbol', f'#{i+1}')} 分析失败: {str(e)}"
+                    errors.append(error_msg)
+            
+            # 保存数据
+            if results:
+                all_data = load_data()
+                new_records_map = {}
+                for r in results:
+                    date = r['timestamp'].split(' ')[0]
+                    symbol = r['symbol']
+                    key = (date, symbol)
+                    new_records_map[key] = r
+                
+                filtered_old_data = []
+                for old_record in all_data:
+                    date = old_record.get('timestamp', '').split(' ')[0]
+                    symbol = old_record.get('symbol', '')
+                    key = (date, symbol)
+                    if key not in new_records_map:
+                        filtered_old_data.append(old_record)
+                
+                all_data = filtered_old_data + results
+                save_data(all_data)
+            
+            # 🟢 发送完成消息
+            message = f'成功分析 {len(results)} 个标的'
+            if errors:
+                message += f',{len(errors)} 个失败'
+            
+            final_data = {
+                'type': 'complete',
+                'message': message,
+                'results': results,
+                'errors': errors if errors else None,
+                'oi_stats': {
+                    'total': num_symbols,
+                    'success': sum(1 for s in symbols if oi_data.get(s, (None, None))[0] is not None),
+                    'with_delta': sum(1 for s in symbols if oi_data.get(s, (None, None))[1] is not None)
+                }
+            }
+            
+            yield f"data: {json.dumps(final_data)}\n\n"
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+    
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive'
+        }
+    )
 
 # 注册 swing 项目的 API 扩展
 from api_extension import register_swing_api
