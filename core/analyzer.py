@@ -1,6 +1,5 @@
 """
-核心分析函数 - v2.3.3
-集成动态参数化机制
+核心分析函数 - v2.3.3 (VIX持久化增强版)
 """
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -18,7 +17,6 @@ from .scoring import compute_direction_score, compute_vol_score
 from .confidence import map_liquidity, map_confidence, penalize_extreme_move_low_vol
 from .strategy import map_direction_pref, map_vol_pref, combine_quadrant, get_strategy_info
 
-# v2.3.3 新增导入
 from .market_data import get_vix_with_fallback
 from .rolling_cache import get_global_cache, update_cache_with_record
 from .dynamic_params import compute_all_dynamic_params, validate_dynamic_params
@@ -31,52 +29,43 @@ def calculate_analysis(
     history_scores: Optional[List[float]] = None
 ) -> Dict[str, Any]:
     """
-    核心分析函数 - v2.3.3
+    核心分析函数 - v2.3.3 (VIX持久化增强版)
     
-    新增流程：
-    1. 获取 VIX 数据
-    2. 从缓存加载历史数据
-    3. 计算动态参数 (βₜ, λₜ, αₜ)
-    4. 应用动态参数到评分
-    5. 更新缓存
+    改进:
+    1. 确保 VIX 值被持久化到分析记录的顶层 (非仅在 dynamic_params 中)
+    2. 所有分析记录都包含 VIX 值，即使动态参数未启用
     
     Args:
         data: 原始输入数据
-        cfg: 配置参数 (默认使用 DEFAULT_CFG)
+        cfg: 配置参数
         ignore_earnings: 是否忽略财报事件
-        history_scores: 历史方向评分列表 (用于跨期一致性计算)
+        history_scores: 历史方向评分列表
         
     Returns:
-        完整分析结果（包含动态参数）
+        完整分析结果 (包含 vix 字段)
     """
     if cfg is None:
         cfg = DEFAULT_CFG
     
-    # 1. 数据清洗与归一化
     cleaned = clean_record(data)
     normed = normalize_dataset([cleaned])[0]
     symbol = normed.get('symbol', 'N/A')
     
-    # 2. 获取生效配置 (Index vs Stock)
     effective_cfg = get_dynamic_thresholds(symbol, cfg)
     
-    # ============ 🟩 v2.3.3: 动态参数计算 ============
+    # ============ 🟢 强制获取 VIX (不受动态参数开关影响) ============
+    vix_value = get_vix_with_fallback(
+        default=effective_cfg.get("vix_fallback_value", 18.0)
+    )
     
+    # ============ 动态参数计算 ============
     dynamic_params = None
-    vix_value = None
     
     if effective_cfg.get("enable_dynamic_params", True):
         try:
-            # 获取 VIX 数据
-            vix_value = get_vix_with_fallback(
-                default=effective_cfg.get("vix_fallback_value", 18.0)
-            )
-            
-            # 获取历史缓存
             cache = get_global_cache()
             history_cache = cache.get_data()
             
-            # 计算动态参数
             dynamic_params = compute_all_dynamic_params(
                 normed,
                 vix_value,
@@ -84,7 +73,6 @@ def calculate_analysis(
                 effective_cfg
             )
             
-            # 验证参数
             if not validate_dynamic_params(dynamic_params):
                 print(f"⚠ Warning: Invalid dynamic params for {symbol}, using fallback")
                 dynamic_params = None
@@ -94,48 +82,31 @@ def calculate_analysis(
             dynamic_params = None
     
     # ============ 基础指标计算 ============
-    
     spot_vol_score = compute_spot_vol_correlation_score(normed)
     is_squeeze = detect_squeeze_potential(normed, effective_cfg)
     term_structure_val, term_structure_str = compute_term_structure(normed)
     active_open_ratio = compute_active_open_ratio(normed)
     
-    # ============ 🟩 评分计算（应用动态参数） ============
-    
-    dir_score = compute_direction_score(
-        normed,
-        effective_cfg,
-        dynamic_params=dynamic_params  # v2.3.3 新增参数
-    )
-    
-    vol_score = compute_vol_score(
-        normed,
-        effective_cfg,
-        ignore_earnings=ignore_earnings,
-        dynamic_params=dynamic_params  # v2.3.3 新增参数
-    )
+    # ============ 评分计算 ============
+    dir_score = compute_direction_score(normed, effective_cfg, dynamic_params=dynamic_params)
+    vol_score = compute_vol_score(normed, effective_cfg, ignore_earnings=ignore_earnings, dynamic_params=dynamic_params)
     
     # ============ 偏好映射 ============
-    
     dir_pref = map_direction_pref(dir_score)
     vol_pref = map_vol_pref(vol_score, effective_cfg)
     quadrant = combine_quadrant(dir_pref, vol_pref)
     
     # ============ 流动性与置信度 ============
-    
     liquidity = map_liquidity(normed, effective_cfg)
     confidence, structure_factor, consistency = map_confidence(
         dir_score, vol_score, liquidity, normed, effective_cfg, history_scores
     )
-    
     penal_flag = penalize_extreme_move_low_vol(normed, effective_cfg)
     
     # ============ 策略建议 ============
-    
     strategy_info = get_strategy_info(quadrant, liquidity, is_squeeze=is_squeeze)
     
     # ============ 派生指标 ============
-    
     iv30 = normed.get("IV30")
     hv20 = normed.get("HV20", 1)
     hv1y = normed.get("HV1Y", 1)
@@ -149,7 +120,6 @@ def calculate_analysis(
     days_to_earnings = days_until(parse_earnings_date(normed.get("Earnings")))
     
     # ============ 驱动因素 ============
-    
     direction_factors = []
     price_chg = normed.get("PriceChgPct", 0) or 0
     
@@ -194,8 +164,7 @@ def calculate_analysis(
         elif term_structure_val < 0.9:
             vol_factors.append("📈 期限陡峭 (正常)")
     
-    # ============ 构建返回结果 ============
-    
+    # ============ 🟢 构建返回结果 (VIX 提升到顶层) ============
     result = {
         'symbol': symbol,
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -204,13 +173,20 @@ def calculate_analysis(
         'liquidity': liquidity,
         'penalized_extreme_move_low_vol': penal_flag,
         
+        # 🟢 VIX 提升到顶层 (与 IVR/IV30 等同级)
+        'vix': round(vix_value, 2) if vix_value else None,
+        
+        # 🟢 清洗后的核心字段 (供 API 直接使用)
+        'ivr': normed.get('IVR'),
+        'iv30': normed.get('IV30'),
+        'hv20': normed.get('HV20'),
+        
         # 高级指标
         'is_squeeze': is_squeeze,
         'is_index': symbol in INDEX_TICKERS,
         'spot_vol_corr_score': round(spot_vol_score, 2),
         'term_structure_ratio': term_structure_str,
         
-        # v2.3.2 字段
         'active_open_ratio': round(active_open_ratio, 4),
         'consistency': round(consistency, 3),
         'structure_factor': round(structure_factor, 2),
@@ -224,10 +200,10 @@ def calculate_analysis(
         'direction_factors': direction_factors,
         'vol_factors': vol_factors,
         
-        # 🟩 v2.3.3: 动态参数
+        # 动态参数详情
         'dynamic_params': {
             'enabled': effective_cfg.get("enable_dynamic_params", True),
-            'vix': round(vix_value, 2) if vix_value else None,
+            'vix': round(vix_value, 2) if vix_value else None,  # 保留此字段用于兼容
             'beta_t': round(dynamic_params['beta_t'], 4) if dynamic_params else None,
             'lambda_t': round(dynamic_params['lambda_t'], 4) if dynamic_params else None,
             'alpha_t': round(dynamic_params['alpha_t'], 4) if dynamic_params else None,
@@ -254,6 +230,7 @@ def calculate_analysis(
         'raw_data': data
     }
     
+    # ============ 更新缓存 ============
     if effective_cfg.get("enable_dynamic_params", True) and dynamic_params and vix_value:
         try:
             cache = get_global_cache()

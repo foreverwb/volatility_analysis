@@ -208,5 +208,6 @@ __marimo__/
 analysis_records.json
 rolling_cache.json
 vix_cache.json
+oi_cache.json
 
 .DS_Storegs

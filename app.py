@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from queue import Queue, Empty
 import threading
+from core.market_data import get_vix_info, clear_vix_cache
 
 from core import (
     DEFAULT_CFG,
@@ -538,6 +539,49 @@ def analyze_stream():
             'Connection': 'keep-alive'
         }
     )
+
+
+@app.route('/api/vix/info', methods=['GET'])
+def get_vix_cache_info():
+    """
+    获取 VIX 缓存状态（诊断用）
+    
+    GET /api/vix/info
+    
+    响应示例:
+        {
+            "current_vix": 18.52,
+            "cached_vix": 18.52,
+            "cache_age_seconds": 300,
+            "cache_valid": true,
+            "cache_file": "vix_cache.json",
+            "cache_exists": true
+        }
+    """
+    try:
+        info = get_vix_info()
+        return jsonify(info)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/vix/clear', methods=['POST'])
+def clear_vix_cache_endpoint():
+    """
+    清除 VIX 缓存（强制刷新用）
+    
+    POST /api/vix/clear
+    
+    响应示例:
+        {
+            "message": "VIX cache cleared successfully"
+        }
+    """
+    try:
+        clear_vix_cache()
+        return jsonify({'message': 'VIX cache cleared successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # 注册 swing 项目的 API 扩展
 from api_extension import register_swing_api
