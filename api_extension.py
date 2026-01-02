@@ -5,6 +5,7 @@ API 扩展模块 - v2.3.3 VIX增强版
 
 from flask import jsonify, request
 from datetime import datetime
+from collections import defaultdict
 import json
 import os
 import re
@@ -71,6 +72,8 @@ def get_historical_iv30(symbol: str, target_date: str = None, days: int = 3) -> 
     records = load_records()
     symbol_upper = symbol.upper()
     
+    print(f"\n🔍 get_historical_iv30: {symbol}, target={target_date}, days={days}")
+    
     # 筛选该 symbol 的所有记录
     symbol_records = [
         r for r in records 
@@ -78,7 +81,10 @@ def get_historical_iv30(symbol: str, target_date: str = None, days: int = 3) -> 
     ]
     
     if not symbol_records:
+        print(f"❌ {symbol}: No records found in database")
         return []
+    
+    print(f"  📁 Found {len(symbol_records)} total records for {symbol}")
     
     # 按日期分组（每天只保留最新记录）
     from collections import defaultdict
@@ -92,43 +98,67 @@ def get_historical_iv30(symbol: str, target_date: str = None, days: int = 3) -> 
         date_str = timestamp.split(' ')[0]  # 提取日期部分
         records_by_date[date_str].append(r)
     
+    print(f"  📅 Available dates: {sorted(records_by_date.keys(), reverse=True)}")
+    
     # 每天取最新记录
     daily_latest = {}
     for date_str, day_records in records_by_date.items():
         day_records.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
         daily_latest[date_str] = day_records[0]
     
-    # 按日期降序排序
+    # 🔧 按日期降序排序
     sorted_dates = sorted(daily_latest.keys(), reverse=True)
     
-    # 如果指定了日期，从该日期开始查找
+    # 🔧 如果指定了日期，从该日期开始查找
+    start_index = 0
     if target_date:
-        try:
-            target_index = sorted_dates.index(target_date)
-            sorted_dates = sorted_dates[target_index:]
-        except ValueError:
-            return []  # 目标日期不存在
+        if target_date in sorted_dates:
+            start_index = sorted_dates.index(target_date)
+            print(f"  ✓ Target date {target_date} found at index {start_index}")
+        else:
+            print(f"❌ {symbol}: Target date {target_date} not found")
+            print(f"  Available: {sorted_dates}")
+            return []
     
-    # 提取最近 N 个交易日的 IV30
+    # 🔧 提取最近 N 个交易日的记录（从 target_date 开始往前数）
+    selected_dates = sorted_dates[start_index:start_index + days]
+    
+    if len(selected_dates) < days:
+        print(f"❌ {symbol}: Only {len(selected_dates)} days available, need {days}")
+        print(f"  Selected dates: {selected_dates}")
+        return []
+    
+    print(f"  ✓ Selected dates (desc): {selected_dates}")
+    
+    # 🔧 提取 IV30 值
     iv30_values = []
-    for date_str in sorted_dates[:days]:
+    for date_str in selected_dates:
         record = daily_latest[date_str]
         
-        # 优先从顶层读取（v2.3.3+），回退到 raw_data
-        iv30 = record.get('iv30') or record.get('raw_data', {}).get('IV30')
+        # 🔧 优先从顶层读取，注意不能用 `or` 因为 0 也是有效值
+        iv30 = record.get('iv30')
+        if iv30 is None:
+            iv30 = record.get('raw_data', {}).get('IV30')
+        
+        print(f"    📊 {date_str}: iv30(top)={record.get('iv30')}, iv30(raw)={record.get('raw_data', {}).get('IV30')}, final={iv30}")
         
         if iv30 is not None:
             try:
-                iv30_values.append(float(iv30))
-            except (ValueError, TypeError):
-                continue
+                iv30_float = float(iv30)
+                iv30_values.append(iv30_float)
+                print(f"    ✓ {date_str}: IV30={iv30_float}")
+            except (ValueError, TypeError) as e:
+                print(f"    ❌ {date_str}: Cannot convert IV30={iv30} to float: {e}")
+                return []
+        else:
+            print(f"    ❌ {date_str}: IV30 is None")
+            return []
     
-    # 需要恰好 N 个数据点
-    if len(iv30_values) != days:
-        return []
-    
-    # 返回按时间升序的列表 [T-2, T-1, T]
-    return list(reversed(iv30_values))
+    # 🔧 返回按时间升序的列表 [T-2, T-1, T]
+    # selected_dates 是降序的 [T, T-1, T-2]，所以需要反转
+    result = list(reversed(iv30_values))
+    print(f"✓ {symbol}: IV30 history (asc) = {result}")
+    return result
 
 
 def compute_iv_path(symbol: str, target_date: str = None, threshold: float = 1.0) -> str:
@@ -143,12 +173,16 @@ def compute_iv_path(symbol: str, target_date: str = None, threshold: float = 1.0
     Returns:
         "Rising" | "Falling" | "Flat" | "Insufficient_Data"
     """
+    print(f"\n🔍 Computing iv_path for {symbol} (target_date={target_date})")
+    
     iv_history = get_historical_iv30(symbol, target_date, days=3)
     
     if len(iv_history) < 3:
+        print(f"❌ {symbol}: Insufficient data (got {len(iv_history)} days, need 3)")
         return "Insufficient_Data"
     
     iv_t_minus_2, iv_t_minus_1, iv_t = iv_history
+    print(f"  📈 IV30 history: T-2={iv_t_minus_2}, T-1={iv_t_minus_1}, T={iv_t}")
     
     # 计算变化百分比
     def pct_change(old, new):
@@ -159,16 +193,21 @@ def compute_iv_path(symbol: str, target_date: str = None, threshold: float = 1.0
     chg_1 = pct_change(iv_t_minus_2, iv_t_minus_1)  # T-2 到 T-1
     chg_2 = pct_change(iv_t_minus_1, iv_t)          # T-1 到 T
     
+    print(f"  📊 Changes: T-2→T-1={chg_1:+.2f}%, T-1→T={chg_2:+.2f}%")
+    
     # 判断趋势
     # Rising: 连续两日上升
     if chg_1 > threshold and chg_2 > threshold:
+        print(f"✓ {symbol}: Rising (both > {threshold}%)")
         return "Rising"
     
     # Falling: 连续两日下降
     if chg_1 < -threshold and chg_2 < -threshold:
+        print(f"✓ {symbol}: Falling (both < -{threshold}%)")
         return "Falling"
     
     # Flat: 其他情况（包括方向不连续或变动幅度小）
+    print(f"✓ {symbol}: Flat (threshold=±{threshold}%)")
     return "Flat"
 
 
@@ -308,40 +347,6 @@ def register_swing_api(app):
     
     @app.route('/api/swing/params/<symbol>', methods=['GET'])
     def get_swing_params(symbol: str):
-        """
-        获取 swing 项目所需的市场参数 (v2.3.3 VIX增强版)
-        
-        请求示例:
-            GET /api/swing/params/NVDA
-            GET /api/swing/params/NVDA?date=2025-12-06
-            GET /api/swing/params/NVDA?vix=18.5  (可选覆盖)
-            
-        查询参数:
-            date: 目标日期，格式 YYYY-MM-DD (可选，默认返回最新记录)
-            vix: VIX 覆盖值 (可选，用于手动指定 VIX)
-            
-        响应示例:
-            {
-                "success": true,
-                "symbol": "NVDA",
-                "date": "2025-12-06",
-                "vix": 18.5,
-                "params": {
-                    "ivr": 63,
-                    "iv30": 47.2,
-                    "hv20": 40,
-                    "earning_date": "2025-11-19",
-                    "iv_path": "Rising"
-                },
-                "_source": { ... }
-            }
-            
-        iv_path 可能的值:
-            - "Rising": IV30 连续两日上升
-            - "Falling": IV30 连续两日下降
-            - "Flat": 变动幅度小于阈值或方向不连续
-            - "Insufficient_Data": 历史数据不足
-        """
         symbol = symbol.upper()
         
         # 获取日期参数
@@ -389,9 +394,9 @@ def register_swing_api(app):
         if vix_override is not None:
             params['vix'] = vix_override
         
-        # 检查必要参数
+        params['iv_path'] = compute_iv_path(symbol, target_date)
         missing = []
-        for key in ['vix', 'ivr', 'iv30', 'hv20']:  # 🟢 VIX 现在是必要字段
+        for key in ['vix', 'ivr', 'iv30', 'hv20', 'iv_path']:  # 🟢 VIX 现在是必要字段
             if params.get(key) is None:
                 missing.append(key)
         
@@ -401,7 +406,7 @@ def register_swing_api(app):
                 'error': f'Missing required fields: {missing}',
                 'partial_params': params
             }), 400
-        
+        print("params", json.dumps(params))
         # 🟢 返回结构: vix 与 symbol 同级
         return jsonify({
             'success': True,
@@ -413,7 +418,7 @@ def register_swing_api(app):
                 'iv30': params['iv30'],
                 'hv20': params['hv20'],
                 'earning_date': params['earning_date'],
-                'iv_path': params['iv_path']  # 🟢 新增字段
+                'iv_path': params['iv_path']  
             },
             '_source': params['_source']
         })
@@ -442,12 +447,19 @@ def register_swing_api(app):
                             "ivr": 63,
                             "iv30": 47.2,
                             "hv20": 40,
-                            "earning_date": "2025-11-19"
+                            "earning_date": "2025-11-19",
+                            "iv_path": "Rising"
                         }
                     },
                     "TSLA": {
                         "vix": 18.5,
-                        "params": { ... }
+                        "params": {
+                            "ivr": 35,
+                            "iv30": 55.7,
+                            "hv20": 48.3,
+                            "earning_date": null,
+                            "iv_path": "Falling"
+                        }
                     }
                 },
                 "errors": {
@@ -507,7 +519,7 @@ def register_swing_api(app):
                     'iv30': params['iv30'],
                     'hv20': params['hv20'],
                     'earning_date': params['earning_date'],
-                    'iv_path': params['iv_path']  # 🟢 新增字段
+                    'iv_path': params.get('iv_path', 'Insufficient_Data')  # 🔧 使用 get 方法
                 }
             }
         
