@@ -1,5 +1,6 @@
 """
 核心分析函数 - v2.3.3 (VIX持久化增强版)
+✨ NEW: 支持时间限制跳过 OI 数据
 """
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -26,7 +27,8 @@ def calculate_analysis(
     data: Dict[str, Any],
     cfg: Dict[str, Any] = None,
     ignore_earnings: bool = False,
-    history_scores: Optional[List[float]] = None
+    history_scores: Optional[List[float]] = None,
+    skip_oi: bool = False  # ✨ NEW: 是否跳过 OI 相关计算
 ) -> Dict[str, Any]:
     """
     核心分析函数 - v2.3.3 (VIX持久化增强版)
@@ -34,12 +36,14 @@ def calculate_analysis(
     改进:
     1. 确保 VIX 值被持久化到分析记录的顶层 (非仅在 dynamic_params 中)
     2. 所有分析记录都包含 VIX 值，即使动态参数未启用
+    3. ✨ NEW: 支持时间限制跳过 OI 数据
     
     Args:
         data: 原始输入数据
         cfg: 配置参数
         ignore_earnings: 是否忽略财报事件
         history_scores: 历史方向评分列表
+        skip_oi: ✨ 是否跳过 OI 相关计算（18:00 前为 True）
         
     Returns:
         完整分析结果 (包含 vix 字段)
@@ -85,11 +89,28 @@ def calculate_analysis(
     spot_vol_score = compute_spot_vol_correlation_score(normed)
     is_squeeze = detect_squeeze_potential(normed, effective_cfg)
     term_structure_val, term_structure_str = compute_term_structure(normed)
-    active_open_ratio = compute_active_open_ratio(normed)
+    
+    # ✨ NEW: 条件计算 ActiveOpenRatio
+    if skip_oi:
+        active_open_ratio = 0.0  # 跳过 OI 时设为 0
+    else:
+        active_open_ratio = compute_active_open_ratio(normed)
     
     # ============ 评分计算 ============
-    dir_score = compute_direction_score(normed, effective_cfg, dynamic_params=dynamic_params)
-    vol_score = compute_vol_score(normed, effective_cfg, ignore_earnings=ignore_earnings, dynamic_params=dynamic_params)
+    # ✨ NEW: 传递 skip_oi 标志
+    dir_score = compute_direction_score(
+        normed, 
+        effective_cfg, 
+        dynamic_params=dynamic_params,
+        skip_oi=skip_oi  # ✨ 新增参数
+    )
+    
+    vol_score = compute_vol_score(
+        normed, 
+        effective_cfg, 
+        ignore_earnings=ignore_earnings, 
+        dynamic_params=dynamic_params
+    )
     
     # ============ 偏好映射 ============
     dir_pref = map_direction_pref(dir_score)
@@ -135,15 +156,17 @@ def calculate_analysis(
     direction_factors.append(f"Call/Put比率 {cp_ratio:.2f}")
     direction_factors.append(f"相对量 {normed.get('RelVolTo90D', 1.0):.2f}x")
     
-    if active_open_ratio >= 0.05:
-        direction_factors.append(f"📈 主动开仓 {active_open_ratio:.3f}")
-    elif active_open_ratio <= -0.05:
-        direction_factors.append(f"📉 平仓信号 {active_open_ratio:.3f}")
+    # ✨ NEW: 只在有 OI 数据时显示
+    if not skip_oi:
+        if active_open_ratio >= 0.05:
+            direction_factors.append(f"📈 主动开仓 {active_open_ratio:.3f}")
+        elif active_open_ratio <= -0.05:
+            direction_factors.append(f"📉 平仓信号 {active_open_ratio:.3f}")
     
     if spot_vol_score >= 0.4:
         direction_factors.append("🔥 逼空/动量 (价升波升)")
     elif spot_vol_score <= -0.5:
-        direction_factors.append("⚠️ 恐慌抛售 (价跌波升)")
+        direction_factors.append("⚠️ 恐慌抛售 (价跌波降)")
     elif spot_vol_score >= 0.2:
         direction_factors.append("📈 磨涨 (价升波降)")
     
@@ -191,6 +214,9 @@ def calculate_analysis(
         'consistency': round(consistency, 3),
         'structure_factor': round(structure_factor, 2),
         'flow_bias': round(notional_bias, 3),
+        
+        # ✨ NEW: 添加 OI 状态标记
+        'oi_data_available': not skip_oi,
         
         # 评分
         'direction_score': round(dir_score, 3),

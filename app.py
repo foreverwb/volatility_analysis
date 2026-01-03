@@ -6,12 +6,13 @@ Flask 主应用入口
 1. 移除循环导入问题
 2. 修正历史评分获取函数的位置
 3. 确保所有依赖正确导入
+4. ✨ NEW: 添加18:00时间限制逻辑
 """
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response, stream_with_context
 import json
 import os
 from typing import List, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from collections import defaultdict
 from queue import Queue, Empty
 import threading
@@ -25,6 +26,31 @@ from core.oi_fetcher import batch_fetch_oi, auto_tune_workers, estimate_fetch_ti
 app = Flask(__name__)
 
 DATA_FILE = 'analysis_records.json'
+
+# =========================
+# ✨ NEW: 时间判断工具函数
+# =========================
+def should_skip_oi_fetch() -> bool:
+    """
+    判断当前时间是否应跳过 OI 数据获取
+    
+    规则: 北京时间 18:00 之前跳过
+    
+    Returns:
+        True if 当前时间 < 18:00 CST
+    """
+    import pytz
+    
+    # 获取北京时间
+    beijing_tz = pytz.timezone('Asia/Shanghai')
+    now_beijing = datetime.now(beijing_tz)
+    
+    # 18:00 时间点
+    cutoff_time = time(18, 0, 0)
+    
+    # 比较当前时间
+    return now_beijing.time() < cutoff_time
+
 
 # =========================
 # 数据持久化
@@ -159,23 +185,34 @@ def analyze():
         if len(records) == 0:
             return jsonify({'error': '数据列表不能为空'}), 400
         
+        # ✨ NEW: 检查是否需要跳过 OI 获取
+        skip_oi = should_skip_oi_fetch()
+        
         # 提取所有 symbol
         symbols = list(set(r.get('symbol', '') for r in records if r.get('symbol')))
         num_symbols = len(symbols)
         
-        # 自动调整并发数
-        max_workers = auto_tune_workers(num_symbols)
-        estimated_time = estimate_fetch_time(num_symbols, max_workers)
+        # 初始化 OI 数据字典
+        oi_data = {}
         
-        print(f"\n{'='*60}")
-        print(f"📊 OI 数据获取配置:")
-        print(f"   - 标的数量: {num_symbols}")
-        print(f"   - 并发线程: {max_workers}")
-        print(f"   - 预计耗时: {estimated_time:.1f}s")
-        print(f"{'='*60}\n")
-        
-         # 批量获取 OI 数据（多线程）
-        oi_data = batch_fetch_oi(symbols, max_workers=max_workers)
+        if skip_oi:
+            # ✨ 跳过 OI 获取
+            print(f"\n⏰ 当前时间早于 18:00 CST，跳过 OI 数据获取")
+            print(f"📊 将直接分析 {num_symbols} 个标的（无 ΔOI）\n")
+        else:
+            # 正常获取 OI 数据
+            auto_tuned_workers = auto_tune_workers(num_symbols)
+            estimated_time = estimate_fetch_time(num_symbols, auto_tuned_workers)
+            
+            print(f"\n{'='*60}")
+            print(f"📊 OI 数据获取配置:")
+            print(f"   - 标的数量: {num_symbols}")
+            print(f"   - 并发线程: {auto_tuned_workers}")
+            print(f"   - 预计耗时: {estimated_time:.1f}s")
+            print(f"{'='*60}\n")
+            
+            # 批量获取 OI 数据（多线程）
+            oi_data = batch_fetch_oi(symbols, max_workers=auto_tuned_workers)
         
         results = []
         errors = []
@@ -184,8 +221,8 @@ def analyze():
             try:
                 symbol = record.get('symbol', '')
                 
-                # 注入 OI 数据
-                if symbol in oi_data:
+                # 注入 OI 数据（如果有）
+                if not skip_oi and symbol in oi_data:
                     current_oi, delta_oi = oi_data[symbol]
                     if delta_oi is not None:
                         record['ΔOI_1D'] = delta_oi
@@ -193,10 +230,12 @@ def analyze():
                 # 获取历史评分用于跨期一致性计算
                 history_scores = get_history_scores(symbol)
                 
+                # ✨ NEW: 传递 skip_oi 标志到分析函数
                 analysis = calculate_analysis(
                     record,
                     ignore_earnings=ignore_earnings,
-                    history_scores=history_scores
+                    history_scores=history_scores,
+                    skip_oi=skip_oi  # ✨ 新增参数
                 )
                 results.append(analysis)
             except Exception as e:
@@ -229,6 +268,10 @@ def analyze():
         if errors:
             message += f',{len(errors)} 个失败'
         
+        # ✨ 修改响应消息
+        if skip_oi:
+            message += ' (已跳过 OI 数据获取)'
+        
         return jsonify({
             'message': message,
             'results': results,
@@ -236,7 +279,8 @@ def analyze():
             'oi_stats': {
                 'total': num_symbols,
                 'success': sum(1 for s in symbols if oi_data.get(s, (None, None))[0] is not None),
-                'with_delta': sum(1 for s in symbols if oi_data.get(s, (None, None))[1] is not None)
+                'with_delta': sum(1 for s in symbols if oi_data.get(s, (None, None))[1] is not None),
+                'skipped': skip_oi  # ✨ 新增标志
             }
         }), 201
     
@@ -353,6 +397,7 @@ def analyze_stream():
     1. 使用 Queue 实现线程安全的进度通知
     2. 在后台线程执行 OI 获取，主线程负责 SSE 推送
     3. 解决进度一直为 0 的问题
+    4. ✨ NEW: 添加18:00时间限制逻辑
     
     POST /api/analyze/stream?ignore_earnings=false
     Body: { "records": [...] }
@@ -375,79 +420,96 @@ def analyze_stream():
             # 🟢 发送初始化消息
             yield f"data: {json.dumps({'type': 'init', 'total': num_symbols})}\n\n"
             
-            # 自动调整并发数
-            max_workers = auto_tune_workers(num_symbols)
-            estimated_time = estimate_fetch_time(num_symbols, max_workers)
+            # ✨ NEW: 检查是否需要跳过 OI 获取
+            skip_oi = should_skip_oi_fetch()
             
-            yield f"data: {json.dumps({'type': 'info', 'workers': max_workers, 'estimated_time': estimated_time})}\n\n"
-            
-            # 🟢 创建进度队列（线程安全）
-            progress_queue = Queue()
+            # 初始化 OI 数据
             oi_data = {}
-            fetch_error = None
             
-            # 🟢 在后台线程执行 OI 获取
-            def fetch_oi_task():
-                nonlocal oi_data, fetch_error
-                try:
-                    oi_data = batch_fetch_oi(
-                        symbols, 
-                        max_workers=max_workers,
-                        progress_queue=progress_queue  # 传入队列
-                    )
-                except Exception as e:
-                    fetch_error = str(e)
-                    progress_queue.put({'type': 'error', 'error': str(e)})
-            
-            # 启动后台线程
-            fetch_thread = threading.Thread(target=fetch_oi_task)
-            fetch_thread.start()
-            
-            # 🟢 主线程持续读取队列并推送进度
-            oi_fetch_complete = False
-            
-            while not oi_fetch_complete or not progress_queue.empty():
-                try:
-                    # 从队列获取进度（超时 0.5 秒）
-                    progress_data = progress_queue.get(timeout=0.5)
-                    
-                    if progress_data.get('type') == 'complete':
-                        # OI 获取完成
-                        oi_fetch_complete = True
-                        yield f"data: {json.dumps({
-                            'type': 'oi_complete', 
-                            'success': sum(1 for s in symbols if oi_data.get(s, (None, None))[0] is not None)
-                        })}\n\n"
-                        break
-                    
-                    elif progress_data.get('type') == 'error':
-                        # 发生错误
-                        yield f"data: {json.dumps(progress_data)}\n\n"
-                        return
-                    
-                    else:
-                        # 🟢 正常进度更新
-                        yield f"data: {json.dumps({
-                            'type': 'progress',
-                            'completed': progress_data['completed'],
-                            'total': progress_data['total'],
-                            'symbol': progress_data['symbol'],
-                            'percentage': round((progress_data['completed'] / progress_data['total']) * 100, 1)
-                        })}\n\n"
+            if skip_oi:
+                # ✨ 跳过 OI 获取
+                info_msg = {'type': 'info', 'message': '当前时间早于 18:00 CST，跳过 OI 数据获取', 'workers': 0, 'estimated_time': 0}
+                yield f"data: {json.dumps(info_msg)}\n\n"
                 
-                except Empty:
-                    # 队列为空，检查线程是否还在运行
-                    if not fetch_thread.is_alive():
-                        oi_fetch_complete = True
-                        break
-                    continue
-            
-            # 等待线程结束
-            fetch_thread.join(timeout=5)
-            
-            if fetch_error:
-                yield f"data: {json.dumps({'type': 'error', 'error': fetch_error})}\n\n"
-                return
+                complete_msg = {'type': 'oi_complete', 'success': 0, 'skipped': True}
+                yield f"data: {json.dumps(complete_msg)}\n\n"
+            else:
+                # 正常获取 OI 数据
+                auto_tuned_workers = auto_tune_workers(num_symbols)
+                estimated_time = estimate_fetch_time(num_symbols, auto_tuned_workers)
+                
+                info_data = {'type': 'info', 'workers': auto_tuned_workers, 'estimated_time': estimated_time}
+                yield f"data: {json.dumps(info_data)}\n\n"
+                
+                # 🟢 创建进度队列（线程安全）
+                progress_queue = Queue()
+                fetch_error = None
+                
+                # 🟢 在后台线程执行 OI 获取
+                def fetch_oi_task():
+                    nonlocal oi_data, fetch_error
+                    try:
+                        oi_data = batch_fetch_oi(
+                            symbols, 
+                            max_workers=auto_tuned_workers,
+                            progress_queue=progress_queue  # 传入队列
+                        )
+                    except Exception as e:
+                        fetch_error = str(e)
+                        progress_queue.put({'type': 'error', 'error': str(e)})
+                
+                # 启动后台线程
+                fetch_thread = threading.Thread(target=fetch_oi_task)
+                fetch_thread.start()
+                
+                # 🟢 主线程持续读取队列并推送进度
+                oi_fetch_complete = False
+                
+                while not oi_fetch_complete or not progress_queue.empty():
+                    try:
+                        # 从队列获取进度（超时 0.5 秒）
+                        progress_data = progress_queue.get(timeout=0.5)
+                        
+                        if progress_data.get('type') == 'complete':
+                            # OI 获取完成
+                            oi_fetch_complete = True
+                            complete_data = {
+                                'type': 'oi_complete', 
+                                'success': sum(1 for s in symbols if oi_data.get(s, (None, None))[0] is not None),
+                                'skipped': False
+                            }
+                            yield f"data: {json.dumps(complete_data)}\n\n"
+                            break
+                        
+                        elif progress_data.get('type') == 'error':
+                            # 发生错误
+                            yield f"data: {json.dumps(progress_data)}\n\n"
+                            return
+                        
+                        else:
+                            # 🟢 正常进度更新
+                            progress_msg = {
+                                'type': 'progress',
+                                'completed': progress_data['completed'],
+                                'total': progress_data['total'],
+                                'symbol': progress_data['symbol'],
+                                'percentage': round((progress_data['completed'] / progress_data['total']) * 100, 1)
+                            }
+                            yield f"data: {json.dumps(progress_msg)}\n\n"
+                    
+                    except Empty:
+                        # 队列为空，检查线程是否还在运行
+                        if not fetch_thread.is_alive():
+                            oi_fetch_complete = True
+                            break
+                        continue
+                
+                # 等待线程结束
+                fetch_thread.join(timeout=5)
+                
+                if fetch_error:
+                    yield f"data: {json.dumps({'type': 'error', 'error': fetch_error})}\n\n"
+                    return
             
             # 🟢 开始分析数据
             results = []
@@ -457,8 +519,8 @@ def analyze_stream():
                 try:
                     symbol = record.get('symbol', '')
                     
-                    # 注入 OI 数据
-                    if symbol in oi_data:
+                    # 注入 OI 数据（如果有）
+                    if not skip_oi and symbol in oi_data:
                         current_oi, delta_oi = oi_data[symbol]
                         if delta_oi is not None:
                             record['ΔOI_1D'] = delta_oi
@@ -466,20 +528,23 @@ def analyze_stream():
                     # 获取历史评分
                     history_scores = get_history_scores(symbol)
                     
+                    # ✨ NEW: 传递 skip_oi 标志
                     analysis = calculate_analysis(
                         record,
                         ignore_earnings=ignore_earnings,
-                        history_scores=history_scores
+                        history_scores=history_scores,
+                        skip_oi=skip_oi  # ✨ 新增参数
                     )
                     results.append(analysis)
                     
                     # 🟢 发送单条分析完成（可选）
                     if i % 5 == 0 or i == len(records) - 1:  # 每 5 条或最后一条发送一次
-                        yield f"data: {json.dumps({
+                        analyze_progress = {
                             'type': 'analyze_progress', 
                             'completed': i + 1, 
                             'total': len(records)
-                        })}\n\n"
+                        }
+                        yield f"data: {json.dumps(analyze_progress)}\n\n"
                     
                 except Exception as e:
                     error_msg = f"标的 {record.get('symbol', f'#{i+1}')} 分析失败: {str(e)}"
@@ -510,6 +575,8 @@ def analyze_stream():
             message = f'成功分析 {len(results)} 个标的'
             if errors:
                 message += f',{len(errors)} 个失败'
+            if skip_oi:
+                message += ' (已跳过 OI 数据获取)'
             
             final_data = {
                 'type': 'complete',
@@ -519,7 +586,8 @@ def analyze_stream():
                 'oi_stats': {
                     'total': num_symbols,
                     'success': sum(1 for s in symbols if oi_data.get(s, (None, None))[0] is not None),
-                    'with_delta': sum(1 for s in symbols if oi_data.get(s, (None, None))[1] is not None)
+                    'with_delta': sum(1 for s in symbols if oi_data.get(s, (None, None))[1] is not None),
+                    'skipped': skip_oi  # ✨ 新增标志
                 }
             }
             
@@ -593,6 +661,7 @@ if __name__ == '__main__':
     print("   GET  /api/swing/params/<symbol>?vix=XX")
     print("   POST /api/swing/params/batch")
     print("   GET  /api/swing/symbols")
+    print("\n⏰ 时间限制: 18:00 CST 之前跳过 OI 数据获取")
     
     try:
         app.run(debug=True, host='0.0.0.0', port=8668)

@@ -1,6 +1,7 @@
 """
 评分模型模块 - v2.3.3
 应用动态参数化机制
+✨ NEW: 支持时间限制跳过 OI 修正
 """
 import math
 from typing import Any, Dict, Optional
@@ -16,7 +17,8 @@ from .metrics import (
 def compute_direction_score(
     rec: Dict[str, Any],
     cfg: Dict[str, Any],
-    dynamic_params: Optional[Dict[str, float]] = None
+    dynamic_params: Optional[Dict[str, float]] = None,
+    skip_oi: bool = False  # ✨ NEW: 是否跳过 OI 修正
 ) -> float:
     """
     方向分数计算 - v2.3.3 动态参数版本
@@ -24,8 +26,15 @@ def compute_direction_score(
     改进：
     1. 支持动态 βₜ 参数（从 dynamic_params 获取）
     2. 如果 dynamic_params 为 None，回退到 v2.3.2 固定参数
+    3. ✨ NEW: 支持时间限制跳过 AOR 修正（18:00 前）
     
     公式：DirScore_adj = DirScore × (1 + βₜ·tanh(ActiveOpenRatio))
+    
+    Args:
+        rec: 记录数据
+        cfg: 配置参数
+        dynamic_params: 动态参数字典
+        skip_oi: ✨ 是否跳过 AOR 修正（无 OI 数据时为 True）
     """
     price_chg_pct = rec.get("PriceChgPct", 0.0) or 0.0
     rel_vol = rec.get("RelVolTo90D", 1.0) or 1.0
@@ -87,22 +96,27 @@ def compute_direction_score(
     score = float(score * amp)
     
     # ============ 🟩 v2.3.3: 动态 βₜ 修正 ============
-    
-    active_open_ratio = compute_active_open_ratio(rec)
-    
-    # 获取动态参数（如果启用）
-    if dynamic_params and cfg.get("enable_dynamic_params", True):
-        # 使用动态 βₜ
-        beta_t = dynamic_params.get("beta_t", cfg.get("beta_base", 0.25))
+    # ✨ NEW: 只在有 OI 数据时应用修正
+    if not skip_oi:
+        active_open_ratio = compute_active_open_ratio(rec)
+        
+        # 获取动态参数（如果启用）
+        if dynamic_params and cfg.get("enable_dynamic_params", True):
+            # 使用动态 βₜ
+            beta_t = dynamic_params.get("beta_t", cfg.get("beta_base", 0.25))
+        else:
+            # 回退到 v2.3.2 固定参数
+            beta_t = cfg.get("active_open_ratio_beta", 0.5)
+        
+        # 应用连续修正公式
+        aor_capped = math.tanh(active_open_ratio * 3)  # 软截断
+        adjustment_factor = 1 + beta_t * aor_capped
+        
+        score *= adjustment_factor
     else:
-        # 回退到 v2.3.2 固定参数
-        beta_t = cfg.get("active_open_ratio_beta", 0.5)
-    
-    # 应用连续修正公式
-    aor_capped = math.tanh(active_open_ratio * 3)  # 软截断
-    adjustment_factor = 1 + beta_t * aor_capped
-    
-    score *= adjustment_factor
+        # ✨ 跳过 AOR 修正（记录日志）
+        # print(f"⏰ Skipped AOR adjustment (no OI data)")
+        pass
     
     return score
 

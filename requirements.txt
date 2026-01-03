@@ -1,15 +1,5 @@
-# 期权策略量化分析系统 v2.3.3 依赖
-
-# Web 框架
-Flask>=2.3.0
-
-# 数据处理
-numpy>=1.24.0
-pandas>=1.5.0
-
-# 市场数据（v2.3.3 新增）
-yfinance>=0.2.28
-
-# 可选：HTML 解析（备用 VIX 数据源）
-# beautifulsoup4>=4.12.0
-# requests>=2.31.0
+Flask==3.0.0
+yfinance==0.2.38
+pandas==2.2.0
+numpy==1.26.4
+pytz==2024.1

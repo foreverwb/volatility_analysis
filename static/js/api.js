@@ -1,90 +1,7 @@
 /**
  * API 调用模块
+ * ✨ NEW: 支持显示 OI 跳过状态
  */
-
-/**
- * 分析数据
- */
-// async function analyzeData() {
-//     var input = document.getElementById('dataInput').value.trim();
-    
-//     if (!input) {
-//         showMessage('请输入数据', 'error');
-//         return;
-//     }
-    
-//     try {
-//         input = input.replace(/^\s*\w+\s*=\s*/, '').replace(/;\s*$/, '');
-//         var records = JSON.parse(input);
-        
-//         if (!Array.isArray(records)) {
-//             showMessage('数据必须是数组格式', 'error');
-//             return;
-//         }
-        
-//         if (records.length === 0) {
-//             showMessage('数据数组不能为空', 'error');
-//             return;
-//         }
-
-//         //显示进度提示
-//         var symbolCount = new Set(records.map(r => r.symbol)).size;
-//         var estimatedTime = Math.ceil(symbolCount / 8 * 3); // 粗略估算
-        
-//         showMessage(
-//             `正在获取 ${symbolCount} 个标的的 OI 数据，预计 ${estimatedTime} 秒...`, 
-//             'warning'
-//         );
-        
-//         var response = await fetch('/api/analyze', {
-//             method: 'POST',
-//             headers: {'Content-Type': 'application/json'},
-//             body: JSON.stringify({ records: records })
-//         });
-        
-//         var result = await response.json();
-        
-//         if (response.ok) {
-//             // 🟩 显示 OI 统计信息
-//             var oiStats = result.oi_stats || {};
-//             var message = result.message;
-            
-//             if (oiStats.with_delta) {
-//                 message += ` (OI数据: ${oiStats.with_delta}/${oiStats.total})`;
-//             }
-            
-//             showMessage(result.message, 'success');
-//             document.getElementById('dataInput').value = '';
-//             closeInputDrawer();
-            
-//             var newDates = new Set();
-//             if (result.results && Array.isArray(result.results)) {
-//                 result.results.forEach(function(r) {
-//                     var date = r.timestamp.split(' ')[0];
-//                     newDates.add(date);
-//                 });
-//                 AppState.canvasRecords.push.apply(AppState.canvasRecords, result.results);
-//             }
-            
-//             await loadRecords();
-//             await loadDates();
-            
-//             newDates.forEach(function(date) {
-//                 AppState.expandedDates.add(date);
-//                 var content = document.getElementById('content-' + date);
-//                 var toggle = document.getElementById('toggle-' + date);
-//                 if (content && toggle) {
-//                     content.classList.add('expanded');
-//                     toggle.classList.add('expanded');
-//                 }
-//             });
-//         } else {
-//             showMessage(result.error || '分析失败', 'error');
-//         }
-//     } catch (e) {
-//         showMessage('数据格式错误: ' + e.message, 'error');
-//     }
-// }
 
 async function analyzeData() {
     var input = document.getElementById('dataInput').value.trim();
@@ -137,6 +54,9 @@ async function analyzeData() {
         var decoder = new TextDecoder();
         var buffer = '';
         
+        // ✨ NEW: 标记 OI 是否被跳过
+        var oiSkipped = false;
+        
         // 🟢 读取流
         var loopCount = 0;
         while (true) {
@@ -185,13 +105,25 @@ async function analyzeData() {
                         case 'info':
                             console.log('✓ 配置信息:', {
                                 workers: data.workers,
-                                estimated_time: data.estimated_time
+                                estimated_time: data.estimated_time,
+                                message: data.message
                             });
-                            updateLoadingProgress(
-                                0, 
-                                symbolCount, 
-                                `正在获取 OI 数据（预计 ${Math.ceil(data.estimated_time)} 秒）...`
-                            );
+                            
+                            // ✨ NEW: 检测 OI 跳过消息
+                            if (data.message && data.message.includes('跳过 OI')) {
+                                oiSkipped = true;
+                                updateLoadingProgress(
+                                    0, 
+                                    symbolCount, 
+                                    '⏰ 当前时间早于 18:00，跳过 OI 数据获取'
+                                );
+                            } else {
+                                updateLoadingProgress(
+                                    0, 
+                                    symbolCount, 
+                                    `正在获取 OI 数据（预计 ${Math.ceil(data.estimated_time)} 秒）...`
+                                );
+                            }
                             break;
                             
                         case 'progress':
@@ -205,12 +137,22 @@ async function analyzeData() {
                             break;
                             
                         case 'oi_complete':
-                            console.log('✓ OI 获取完成，成功:', data.success);
-                            updateLoadingProgress(
-                                symbolCount, 
-                                symbolCount, 
-                                '开始分析数据...'
-                            );
+                            console.log('✓ OI 获取完成，成功:', data.success, '跳过:', data.skipped);
+                            
+                            // ✨ NEW: 根据跳过状态显示不同消息
+                            if (data.skipped) {
+                                updateLoadingProgress(
+                                    symbolCount, 
+                                    symbolCount, 
+                                    '⏰ 已跳过 OI 数据，开始分析...'
+                                );
+                            } else {
+                                updateLoadingProgress(
+                                    symbolCount, 
+                                    symbolCount, 
+                                    '开始分析数据...'
+                                );
+                            }
                             break;
                             
                         case 'analyze_progress':
@@ -237,11 +179,17 @@ async function analyzeData() {
                             var oiStats = data.oi_stats || {};
                             var message = data.message;
                             
-                            if (oiStats.with_delta) {
+                            // ✨ NEW: 根据 OI 状态显示不同消息
+                            if (oiStats.skipped) {
+                                message += ' ⏰';
+                                showMessage(message, 'warning');
+                            } else if (oiStats.with_delta) {
                                 message += ` (OI数据: ${oiStats.with_delta}/${oiStats.total})`;
+                                showMessage(message, 'success');
+                            } else {
+                                showMessage(message, 'success');
                             }
                             
-                            showMessage(message, 'success');
                             document.getElementById('dataInput').value = '';
                             
                             var newDates = new Set();
@@ -295,6 +243,7 @@ async function analyzeData() {
         showMessage('请求失败: ' + e.message, 'error');
     }
 }
+
 /**
  * 加载记录
  */
@@ -503,8 +452,7 @@ async function handleEarningsToggle(checkbox) {
 }
 
 // 导出到全局
-// window.analyzeData = analyzeData;
-window.analyzeData = analyzeDataWithSSE;
+window.analyzeData = analyzeData;
 window.loadRecords = loadRecords;
 window.loadDates = loadDates;
 window.deleteRecord = deleteRecord;

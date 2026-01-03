@@ -1,6 +1,7 @@
 """
 核心指标计算模块
 v2.3.2 - 新增 ActiveOpenRatio, Term Structure 等
+✨ NEW: 优雅处理缺失的 ΔOI 数据
 """
 import math
 from datetime import datetime, date
@@ -134,6 +135,7 @@ def detect_squeeze_potential(rec: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
 def compute_active_open_ratio(rec: Dict[str, Any]) -> float:
     """
     🟩 v2.3.2 新增: 计算主动开仓比 (ActiveOpenRatio)
+    ✨ NEW: 优雅处理缺失的 ΔOI 数据
     
     ActiveOpenRatio = ΔOI_1D / TotalVolume
     
@@ -142,8 +144,16 @@ def compute_active_open_ratio(rec: Dict[str, Any]) -> float:
     判断规则:
     - ≥ 0.05 → 新建仓信号
     - ≤ -0.05 → 平仓信号
+    
+    Returns:
+        ActiveOpenRatio 值，如果 ΔOI 不存在返回 0.0
     """
-    delta_oi = rec.get("ΔOI_1D", 0) or rec.get("DeltaOI_1D", 0) or 0
+    # ✨ NEW: 优先检查 ΔOI 是否存在
+    delta_oi = rec.get("ΔOI_1D") or rec.get("DeltaOI_1D")
+    
+    # ✨ 如果 ΔOI 不存在或为 None，返回 0.0（而非报错）
+    if delta_oi is None:
+        return 0.0
     
     # 优先使用 Volume 字段，否则用 CallVolume + PutVolume
     volume = rec.get("Volume")

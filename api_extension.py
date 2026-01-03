@@ -406,22 +406,22 @@ def register_swing_api(app):
                 'error': f'Missing required fields: {missing}',
                 'partial_params': params
             }), 400
-        print("params", json.dumps(params))
         # 🟢 返回结构: vix 与 symbol 同级
-        return jsonify({
+        res = jsonify({
             'success': True,
             'symbol': symbol,
-            'date': target_date or record.get('timestamp', '')[:10],
-            'vix': params['vix'],  # 🟢 提升到顶层
+            'date': target_date or record.get('timestamp', '')[:10], 
             'params': {
                 'ivr': params['ivr'],
                 'iv30': params['iv30'],
                 'hv20': params['hv20'],
                 'earning_date': params['earning_date'],
-                'iv_path': params['iv_path']  
+                'iv_path': params['iv_path'],
+                'vix': params['vix'],
             },
             '_source': params['_source']
         })
+        return res
     
     @app.route('/api/swing/params/batch', methods=['POST'])
     def get_swing_params_batch():
