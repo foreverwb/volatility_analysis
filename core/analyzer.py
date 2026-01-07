@@ -1,6 +1,6 @@
 """
-核心分析函数 - v2.3.3 (VIX持久化增强版)
-✨ NEW: 支持时间限制跳过 OI 数据
+核心分析函数 - v2.5.0 (期限结构增强版)
+✨ NEW: 集成期限结构形态识别
 """
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -22,31 +22,39 @@ from .market_data import get_vix_with_fallback
 from .rolling_cache import get_global_cache, update_cache_with_record
 from .dynamic_params import compute_all_dynamic_params, validate_dynamic_params
 
+# ✨ NEW: 导入期限结构分析模块
+from .term_structure import (
+    analyze_term_structure, 
+    get_term_structure_display,
+    get_term_structure_color,
+    calculate_term_structure_score
+)
+
 
 def calculate_analysis(
     data: Dict[str, Any],
     cfg: Dict[str, Any] = None,
     ignore_earnings: bool = False,
     history_scores: Optional[List[float]] = None,
-    skip_oi: bool = False  # ✨ NEW: 是否跳过 OI 相关计算
+    skip_oi: bool = False
 ) -> Dict[str, Any]:
     """
-    核心分析函数 - v2.3.3 (VIX持久化增强版)
+    核心分析函数 - v2.5.0 (期限结构增强版)
     
     改进:
-    1. 确保 VIX 值被持久化到分析记录的顶层 (非仅在 dynamic_params 中)
-    2. 所有分析记录都包含 VIX 值，即使动态参数未启用
-    3. ✨ NEW: 支持时间限制跳过 OI 数据
+    1. ✨ NEW: 集成期限结构形态识别
+    2. ✨ NEW: 期限结构影响 Vol Score（可配置）
+    3. 持续改进 VIX 持久化和动态参数
     
     Args:
         data: 原始输入数据
         cfg: 配置参数
         ignore_earnings: 是否忽略财报事件
         history_scores: 历史方向评分列表
-        skip_oi: ✨ 是否跳过 OI 相关计算（18:00 前为 True）
+        skip_oi: 是否跳过 OI 相关计算（18:00 前为 True）
         
     Returns:
-        完整分析结果 (包含 vix 字段)
+        完整分析结果 (包含 term_structure 字段)
     """
     if cfg is None:
         cfg = DEFAULT_CFG
@@ -57,7 +65,7 @@ def calculate_analysis(
     
     effective_cfg = get_dynamic_thresholds(symbol, cfg)
     
-    # ============ 🟢 强制获取 VIX (不受动态参数开关影响) ============
+    # ============ VIX 获取 ============
     vix_value = get_vix_with_fallback(
         default=effective_cfg.get("vix_fallback_value", 18.0)
     )
@@ -85,32 +93,69 @@ def calculate_analysis(
             print(f"⚠ Warning: Dynamic params calculation failed: {e}")
             dynamic_params = None
     
+    # ============ ✨ NEW: 期限结构分析 ============
+    term_structure_pattern = None
+    term_structure_score_adjustment = 0.0
+    
+    try:
+        # 获取 IV 数据（统一从 normed 中提取）
+        iv_7d = normed.get('IV_7D') or normed.get('IV7D')
+        iv_30d = normed.get('IV_30D') or normed.get('IV30')
+        iv_60d = normed.get('IV_60D') or normed.get('IV60D')
+        iv_90d = normed.get('IV_90D') or normed.get('IV90D') or normed.get('IV90')
+        
+        # 分析期限结构
+        term_structure_pattern = analyze_term_structure(
+            iv_7d, iv_30d, iv_60d, iv_90d,
+            threshold=effective_cfg.get('term_structure_threshold', 2.0)
+        )
+        
+        # 计算期限结构对 Vol Score 的影响（可配置是否启用）
+        if (term_structure_pattern and 
+            effective_cfg.get('enable_term_structure_adjustment', True)):
+            term_structure_score_adjustment = calculate_term_structure_score(
+                term_structure_pattern
+            )
+    
+    except Exception as e:
+        print(f"⚠ Warning: Term structure analysis failed for {symbol}: {e}")
+    
     # ============ 基础指标计算 ============
     spot_vol_score = compute_spot_vol_correlation_score(normed)
     is_squeeze = detect_squeeze_potential(normed, effective_cfg)
     term_structure_val, term_structure_str = compute_term_structure(normed)
     
-    # ✨ NEW: 条件计算 ActiveOpenRatio
     if skip_oi:
-        active_open_ratio = 0.0  # 跳过 OI 时设为 0
+        active_open_ratio = 0.0
     else:
         active_open_ratio = compute_active_open_ratio(normed)
     
     # ============ 评分计算 ============
-    # ✨ NEW: 传递 skip_oi 标志
     dir_score = compute_direction_score(
         normed, 
         effective_cfg, 
         dynamic_params=dynamic_params,
-        skip_oi=skip_oi  # ✨ 新增参数
+        skip_oi=skip_oi
     )
     
+    # ✨ NEW: Vol Score 应用期限结构调整
     vol_score = compute_vol_score(
         normed, 
         effective_cfg, 
         ignore_earnings=ignore_earnings, 
         dynamic_params=dynamic_params
     )
+    
+    # 应用期限结构修正（如果启用）
+    if term_structure_score_adjustment != 0.0:
+        vol_score_original = vol_score
+        vol_score += term_structure_score_adjustment
+        
+        # 记录调整日志（仅在显著调整时）
+        if abs(term_structure_score_adjustment) > 0.3:
+            print(f"📊 {symbol}: Vol Score 期限结构调整: "
+                  f"{vol_score_original:.2f} → {vol_score:.2f} "
+                  f"({term_structure_pattern.pattern_name})")
     
     # ============ 偏好映射 ============
     dir_pref = map_direction_pref(dir_score)
@@ -156,7 +201,6 @@ def calculate_analysis(
     direction_factors.append(f"Call/Put比率 {cp_ratio:.2f}")
     direction_factors.append(f"相对量 {normed.get('RelVolTo90D', 1.0):.2f}x")
     
-    # ✨ NEW: 只在有 OI 数据时显示
     if not skip_oi:
         if active_open_ratio >= 0.05:
             direction_factors.append(f"📈 主动开仓 {active_open_ratio:.3f}")
@@ -187,7 +231,13 @@ def calculate_analysis(
         elif term_structure_val < 0.9:
             vol_factors.append("📈 期限陡峭 (正常)")
     
-    # ============ 🟢 构建返回结果 (VIX 提升到顶层) ============
+    # ✨ NEW: 添加期限结构形态到波动因素
+    if term_structure_pattern:
+        vol_factors.append(
+            f"{term_structure_pattern.pattern_name} - {term_structure_pattern.signal}"
+        )
+    
+    # ============ 构建返回结果 ============
     result = {
         'symbol': symbol,
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -196,12 +246,14 @@ def calculate_analysis(
         'liquidity': liquidity,
         'penalized_extreme_move_low_vol': penal_flag,
         
-        # 🟢 VIX 提升到顶层 (与 IVR/IV30 等同级)
         'vix': round(vix_value, 2) if vix_value else None,
         
-        # 🟢 清洗后的核心字段 (供 API 直接使用)
+        # 清洗后的核心字段
         'ivr': normed.get('IVR'),
-        'iv30': normed.get('IV30'),
+        'iv7d': normed.get('IV_7D') or normed.get('IV7D'),
+        'iv30': normed.get('IV30') or normed.get('IV_30D'),
+        'iv60d': normed.get('IV_60D') or normed.get('IV60D'),
+        'iv90d': normed.get('IV_90D') or normed.get('IV90D') or normed.get('IV90'),
         'hv20': normed.get('HV20'),
         
         # 高级指标
@@ -215,7 +267,6 @@ def calculate_analysis(
         'structure_factor': round(structure_factor, 2),
         'flow_bias': round(notional_bias, 3),
         
-        # ✨ NEW: 添加 OI 状态标记
         'oi_data_available': not skip_oi,
         
         # 评分
@@ -226,10 +277,15 @@ def calculate_analysis(
         'direction_factors': direction_factors,
         'vol_factors': vol_factors,
         
+        # ✨ NEW: 期限结构分析结果
+        'term_structure': get_term_structure_display(term_structure_pattern) if term_structure_pattern else None,
+        'term_structure_color': get_term_structure_color(term_structure_pattern) if term_structure_pattern else None,
+        'term_structure_adjustment': round(term_structure_score_adjustment, 3),
+        
         # 动态参数详情
         'dynamic_params': {
             'enabled': effective_cfg.get("enable_dynamic_params", True),
-            'vix': round(vix_value, 2) if vix_value else None,  # 保留此字段用于兼容
+            'vix': round(vix_value, 2) if vix_value else None,
             'beta_t': round(dynamic_params['beta_t'], 4) if dynamic_params else None,
             'lambda_t': round(dynamic_params['lambda_t'], 4) if dynamic_params else None,
             'alpha_t': round(dynamic_params['alpha_t'], 4) if dynamic_params else None,

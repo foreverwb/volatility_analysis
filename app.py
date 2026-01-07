@@ -1,12 +1,11 @@
 """
-期权策略量化分析系统 v2.3.2
+期权策略量化分析系统 v2.4.0
 Flask 主应用入口
 
-修复内容：
-1. 移除循环导入问题
-2. 修正历史评分获取函数的位置
-3. 确保所有依赖正确导入
-4. ✨ NEW: 添加18:00时间限制逻辑
+✨ v2.4.0 新增优化：
+1. 优化数据获取顺序：先 OI（快）→ 后 IV（慢）
+2. IV 获取改为并发模式
+3. 增强日志可读性
 """
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response, stream_with_context
 import json
@@ -23,12 +22,13 @@ from core import (
     calculate_analysis
 )
 from core.oi_fetcher import batch_fetch_oi, auto_tune_workers, estimate_fetch_time
+from core.futu_option_iv import fetch_iv_term_structure
 app = Flask(__name__)
 
 DATA_FILE = 'analysis_records.json'
 
 # =========================
-# ✨ NEW: 时间判断工具函数
+# 时间判断工具函数
 # =========================
 def should_skip_oi_fetch() -> bool:
     """
@@ -41,14 +41,11 @@ def should_skip_oi_fetch() -> bool:
     """
     import pytz
     
-    # 获取北京时间
     beijing_tz = pytz.timezone('Asia/Shanghai')
     now_beijing = datetime.now(beijing_tz)
     
-    # 18:00 时间点
     cutoff_time = time(18, 0, 0)
     
-    # 比较当前时间
     return now_beijing.time() < cutoff_time
 
 
@@ -81,11 +78,6 @@ def get_history_scores(symbol: str, n_days: int = 5, as_of_date: str = None) -> 
     """
     获取指定标的的历史方向评分（用于跨期一致性计算）
     
-    v2.3.2 修复版本：
-    - 从"最近 N 条记录"改为"最近 N 个交易日"
-    - 每天只取最新的一条记录
-    - 增加日期有效性验证
-    
     Args:
         symbol: 标的代码（大小写不敏感）
         n_days: 需要的历史天数（默认 5 天）
@@ -97,7 +89,6 @@ def get_history_scores(symbol: str, n_days: int = 5, as_of_date: str = None) -> 
     records = load_data()
     symbol_upper = symbol.upper()
     
-    # 1. 筛选该 symbol 的所有记录
     symbol_records = [
         r for r in records 
         if r.get('symbol', '').upper() == symbol_upper
@@ -106,7 +97,6 @@ def get_history_scores(symbol: str, n_days: int = 5, as_of_date: str = None) -> 
     if not symbol_records:
         return []
     
-    # 2. 确定截止日期
     if as_of_date is None:
         as_of = datetime.now()
     else:
@@ -115,7 +105,6 @@ def get_history_scores(symbol: str, n_days: int = 5, as_of_date: str = None) -> 
         except ValueError:
             as_of = datetime.now()
     
-    # 3. 按日期分组（每天只保留最新的一条）
     records_by_date = defaultdict(list)
     
     for r in symbol_records:
@@ -124,27 +113,21 @@ def get_history_scores(symbol: str, n_days: int = 5, as_of_date: str = None) -> 
             continue
         
         try:
-            # 提取日期部分 (YYYY-MM-DD)
             date_str = timestamp.split(' ')[0]
             dt = datetime.strptime(date_str, '%Y-%m-%d')
             
-            # 只考虑截止日期及之前的记录
             if dt <= as_of:
                 records_by_date[date_str].append(r)
         except (ValueError, IndexError):
             continue
     
-    # 4. 每天只保留最新的记录（按完整 timestamp 排序）
     daily_latest = {}
     for date_str, day_records in records_by_date.items():
-        # 按时间戳降序排序，取第一条（最新）
         day_records.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
         daily_latest[date_str] = day_records[0]
     
-    # 5. 按日期降序排序，取最近 n_days
     sorted_dates = sorted(daily_latest.keys(), reverse=True)
     
-    # 6. 提取方向评分（最多 n_days 条）
     history_scores = []
     for date_str in sorted_dates[:n_days]:
         record = daily_latest[date_str]
@@ -170,10 +153,12 @@ def index():
 @app.route('/api/analyze', methods=['POST'])
 def analyze():
     """
-    分析数据接口
+    分析数据接口 - v2.4.0 优化版
     
     POST /api/analyze?ignore_earnings=false
     Body: { "records": [...] }
+    
+    ✨ 优化: 先获取 OI（快）→ 再获取 IV（慢）
     """
     try:
         ignore_earnings = request.args.get('ignore_earnings', 'false').lower() == 'true'
@@ -185,22 +170,19 @@ def analyze():
         if len(records) == 0:
             return jsonify({'error': '数据列表不能为空'}), 400
         
-        # ✨ NEW: 检查是否需要跳过 OI 获取
         skip_oi = should_skip_oi_fetch()
         
-        # 提取所有 symbol
         symbols = list(set(r.get('symbol', '') for r in records if r.get('symbol')))
         num_symbols = len(symbols)
         
-        # 初始化 OI 数据字典
+        # ========== ✨ 优化：先快后慢 ==========
+        
+        # 1️⃣ 先获取 OI 数据（快，且用户最关心）
         oi_data = {}
         
         if skip_oi:
-            # ✨ 跳过 OI 获取
             print(f"\n⏰ 当前时间早于 18:00 CST，跳过 OI 数据获取")
-            print(f"📊 将直接分析 {num_symbols} 个标的（无 ΔOI）\n")
         else:
-            # 正常获取 OI 数据
             auto_tuned_workers = auto_tune_workers(num_symbols)
             estimated_time = estimate_fetch_time(num_symbols, auto_tuned_workers)
             
@@ -211,31 +193,51 @@ def analyze():
             print(f"   - 预计耗时: {estimated_time:.1f}s")
             print(f"{'='*60}\n")
             
-            # 批量获取 OI 数据（多线程）
             oi_data = batch_fetch_oi(symbols, max_workers=auto_tuned_workers)
         
+        # 2️⃣ 再获取 IV 数据（慢，但可以并发）
+        print(f"\n{'='*60}")
+        print(f"📈 IV 数据获取配置:")
+        print(f"   - 标的数量: {num_symbols}")
+        print(f"   - 并发线程: 5 (Futu 限流保护)")
+        print(f"{'='*60}\n")
+        
+        iv_term_data = fetch_iv_term_structure(
+            symbols,
+            max_workers=5  # Futu API 限流，建议不超过5
+        )
+        
+        # 3️⃣ 分析数据
         results = []
         errors = []
         
         for i, record in enumerate(records):
             try:
                 symbol = record.get('symbol', '')
+                symbol_upper = symbol.upper()
+
+                # 注入 IV 数据
+                if symbol_upper in iv_term_data:
+                    iv_values = iv_term_data[symbol_upper]
+                    for key, value in iv_values.items():
+                        if value is not None:
+                            record[key] = value
+                    if iv_values.get("IV_90D") is not None:
+                        record["IV90"] = iv_values["IV_90D"]
                 
-                # 注入 OI 数据（如果有）
+                # 注入 OI 数据
                 if not skip_oi and symbol in oi_data:
                     current_oi, delta_oi = oi_data[symbol]
                     if delta_oi is not None:
                         record['ΔOI_1D'] = delta_oi
                         
-                # 获取历史评分用于跨期一致性计算
                 history_scores = get_history_scores(symbol)
                 
-                # ✨ NEW: 传递 skip_oi 标志到分析函数
                 analysis = calculate_analysis(
                     record,
                     ignore_earnings=ignore_earnings,
                     history_scores=history_scores,
-                    skip_oi=skip_oi  # ✨ 新增参数
+                    skip_oi=skip_oi
                 )
                 results.append(analysis)
             except Exception as e:
@@ -243,7 +245,7 @@ def analyze():
                 errors.append(error_msg)
                 print(f"错误: {error_msg}")
         
-        # 保存数据
+        # 4️⃣ 保存数据
         if results:
             all_data = load_data()
             new_records_map = {}
@@ -268,7 +270,6 @@ def analyze():
         if errors:
             message += f',{len(errors)} 个失败'
         
-        # ✨ 修改响应消息
         if skip_oi:
             message += ' (已跳过 OI 数据获取)'
         
@@ -280,7 +281,7 @@ def analyze():
                 'total': num_symbols,
                 'success': sum(1 for s in symbols if oi_data.get(s, (None, None))[0] is not None),
                 'with_delta': sum(1 for s in symbols if oi_data.get(s, (None, None))[1] is not None),
-                'skipped': skip_oi  # ✨ 新增标志
+                'skipped': skip_oi
             }
         }), 201
     
@@ -391,13 +392,9 @@ def update_config():
 @app.route('/api/analyze/stream', methods=['POST'])
 def analyze_stream():
     """
-    流式分析接口 - 修复版本
+    流式分析接口 - v2.4.0 优化版
     
-    修复内容：
-    1. 使用 Queue 实现线程安全的进度通知
-    2. 在后台线程执行 OI 获取，主线程负责 SSE 推送
-    3. 解决进度一直为 0 的问题
-    4. ✨ NEW: 添加18:00时间限制逻辑
+    ✨ 优化: 先获取 OI（快）→ 再获取 IV（慢）
     
     POST /api/analyze/stream?ignore_earnings=false
     Body: { "records": [...] }
@@ -413,65 +410,54 @@ def analyze_stream():
                 yield f"data: {json.dumps({'type': 'error', 'error': '数据格式错误'})}\n\n"
                 return
             
-            # 提取所有 symbol
             symbols = list(set(r.get('symbol', '') for r in records if r.get('symbol')))
             num_symbols = len(symbols)
             
-            # 🟢 发送初始化消息
             yield f"data: {json.dumps({'type': 'init', 'total': num_symbols})}\n\n"
             
-            # ✨ NEW: 检查是否需要跳过 OI 获取
             skip_oi = should_skip_oi_fetch()
             
-            # 初始化 OI 数据
+            # ========== 1️⃣ 先获取 OI 数据 ==========
             oi_data = {}
             
             if skip_oi:
-                # ✨ 跳过 OI 获取
                 info_msg = {'type': 'info', 'message': '当前时间早于 18:00 CST，跳过 OI 数据获取', 'workers': 0, 'estimated_time': 0}
                 yield f"data: {json.dumps(info_msg)}\n\n"
                 
                 complete_msg = {'type': 'oi_complete', 'success': 0, 'skipped': True}
                 yield f"data: {json.dumps(complete_msg)}\n\n"
             else:
-                # 正常获取 OI 数据
                 auto_tuned_workers = auto_tune_workers(num_symbols)
                 estimated_time = estimate_fetch_time(num_symbols, auto_tuned_workers)
                 
                 info_data = {'type': 'info', 'workers': auto_tuned_workers, 'estimated_time': estimated_time}
                 yield f"data: {json.dumps(info_data)}\n\n"
                 
-                # 🟢 创建进度队列（线程安全）
                 progress_queue = Queue()
                 fetch_error = None
                 
-                # 🟢 在后台线程执行 OI 获取
                 def fetch_oi_task():
                     nonlocal oi_data, fetch_error
                     try:
                         oi_data = batch_fetch_oi(
                             symbols, 
                             max_workers=auto_tuned_workers,
-                            progress_queue=progress_queue  # 传入队列
+                            progress_queue=progress_queue
                         )
                     except Exception as e:
                         fetch_error = str(e)
                         progress_queue.put({'type': 'error', 'error': str(e)})
                 
-                # 启动后台线程
                 fetch_thread = threading.Thread(target=fetch_oi_task)
                 fetch_thread.start()
                 
-                # 🟢 主线程持续读取队列并推送进度
                 oi_fetch_complete = False
                 
                 while not oi_fetch_complete or not progress_queue.empty():
                     try:
-                        # 从队列获取进度（超时 0.5 秒）
                         progress_data = progress_queue.get(timeout=0.5)
                         
                         if progress_data.get('type') == 'complete':
-                            # OI 获取完成
                             oi_fetch_complete = True
                             complete_data = {
                                 'type': 'oi_complete', 
@@ -482,12 +468,10 @@ def analyze_stream():
                             break
                         
                         elif progress_data.get('type') == 'error':
-                            # 发生错误
                             yield f"data: {json.dumps(progress_data)}\n\n"
                             return
                         
                         else:
-                            # 🟢 正常进度更新
                             progress_msg = {
                                 'type': 'progress',
                                 'completed': progress_data['completed'],
@@ -498,47 +482,57 @@ def analyze_stream():
                             yield f"data: {json.dumps(progress_msg)}\n\n"
                     
                     except Empty:
-                        # 队列为空，检查线程是否还在运行
                         if not fetch_thread.is_alive():
                             oi_fetch_complete = True
                             break
                         continue
                 
-                # 等待线程结束
                 fetch_thread.join(timeout=5)
                 
                 if fetch_error:
                     yield f"data: {json.dumps({'type': 'error', 'error': fetch_error})}\n\n"
                     return
             
-            # 🟢 开始分析数据
+            # ========== 2️⃣ 再获取 IV 数据 ==========
+            yield f"data: {json.dumps({'type': 'info', 'message': '开始获取 IV 数据...'})}\n\n"
+            
+            iv_term_data = fetch_iv_term_structure(symbols, max_workers=5)
+            
+            yield f"data: {json.dumps({'type': 'iv_complete'})}\n\n"
+            
+            # ========== 3️⃣ 分析数据 ==========
             results = []
             errors = []
             
             for i, record in enumerate(records):
                 try:
                     symbol = record.get('symbol', '')
+                    symbol_upper = symbol.upper()
+
+                    if symbol_upper in iv_term_data:
+                        iv_values = iv_term_data[symbol_upper]
+                        for key, value in iv_values.items():
+                            if value is not None:
+                                record[key] = value
+                        if iv_values.get("IV_90D") is not None:
+                            record["IV90"] = iv_values["IV_90D"]
                     
-                    # 注入 OI 数据（如果有）
                     if not skip_oi and symbol in oi_data:
                         current_oi, delta_oi = oi_data[symbol]
                         if delta_oi is not None:
                             record['ΔOI_1D'] = delta_oi
                     
-                    # 获取历史评分
                     history_scores = get_history_scores(symbol)
                     
-                    # ✨ NEW: 传递 skip_oi 标志
                     analysis = calculate_analysis(
                         record,
                         ignore_earnings=ignore_earnings,
                         history_scores=history_scores,
-                        skip_oi=skip_oi  # ✨ 新增参数
+                        skip_oi=skip_oi
                     )
                     results.append(analysis)
                     
-                    # 🟢 发送单条分析完成（可选）
-                    if i % 5 == 0 or i == len(records) - 1:  # 每 5 条或最后一条发送一次
+                    if i % 5 == 0 or i == len(records) - 1:
                         analyze_progress = {
                             'type': 'analyze_progress', 
                             'completed': i + 1, 
@@ -550,7 +544,6 @@ def analyze_stream():
                     error_msg = f"标的 {record.get('symbol', f'#{i+1}')} 分析失败: {str(e)}"
                     errors.append(error_msg)
             
-            # 保存数据
             if results:
                 all_data = load_data()
                 new_records_map = {}
@@ -571,7 +564,6 @@ def analyze_stream():
                 all_data = filtered_old_data + results
                 save_data(all_data)
             
-            # 🟢 发送完成消息
             message = f'成功分析 {len(results)} 个标的'
             if errors:
                 message += f',{len(errors)} 个失败'
@@ -587,7 +579,7 @@ def analyze_stream():
                     'total': num_symbols,
                     'success': sum(1 for s in symbols if oi_data.get(s, (None, None))[0] is not None),
                     'with_delta': sum(1 for s in symbols if oi_data.get(s, (None, None))[1] is not None),
-                    'skipped': skip_oi  # ✨ 新增标志
+                    'skipped': skip_oi
                 }
             }
             
@@ -611,21 +603,7 @@ def analyze_stream():
 
 @app.route('/api/vix/info', methods=['GET'])
 def get_vix_cache_info():
-    """
-    获取 VIX 缓存状态（诊断用）
-    
-    GET /api/vix/info
-    
-    响应示例:
-        {
-            "current_vix": 18.52,
-            "cached_vix": 18.52,
-            "cache_age_seconds": 300,
-            "cache_valid": true,
-            "cache_file": "vix_cache.json",
-            "cache_exists": true
-        }
-    """
+    """获取 VIX 缓存状态"""
     try:
         info = get_vix_info()
         return jsonify(info)
@@ -635,16 +613,7 @@ def get_vix_cache_info():
 
 @app.route('/api/vix/clear', methods=['POST'])
 def clear_vix_cache_endpoint():
-    """
-    清除 VIX 缓存（强制刷新用）
-    
-    POST /api/vix/clear
-    
-    响应示例:
-        {
-            "message": "VIX cache cleared successfully"
-        }
-    """
+    """清除 VIX 缓存"""
     try:
         clear_vix_cache()
         return jsonify({'message': 'VIX cache cleared successfully'})
@@ -657,11 +626,21 @@ register_swing_api(app)
 
 
 if __name__ == '__main__':
-    print("\n📡 Swing API 端点已启用:")
-    print("   GET  /api/swing/params/<symbol>?vix=XX")
+    print("\n" + "="*80)
+    print("期权策略量化分析系统 v2.4.0")
+    print("="*80)
+    print("\n📡 API 端点:")
+    print("   POST /api/analyze         - 标准分析接口")
+    print("   POST /api/analyze/stream  - 流式分析接口（推荐）")
+    print("   GET  /api/swing/params/<symbol>")
     print("   POST /api/swing/params/batch")
-    print("   GET  /api/swing/symbols")
-    print("\n⏰ 时间限制: 18:00 CST 之前跳过 OI 数据获取")
+    print("\n✨ v2.4.0 优化:")
+    print("   • IV 数据并发获取（5线程）")
+    print("   • 优化获取顺序：先 OI（快）→ 后 IV（慢）")
+    print("   • 精简日志输出，增强可读性")
+    print("\n⏰ 时间限制:")
+    print("   • 18:00 CST 之前跳过 OI 数据获取")
+    print("="*80 + "\n")
     
     try:
         app.run(debug=True, host='0.0.0.0', port=8668)

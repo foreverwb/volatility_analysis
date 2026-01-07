@@ -178,7 +178,7 @@ def compute_term_structure(rec: Dict[str, Any]) -> tuple:
     """
     计算期限结构 (Term Structure)
     
-    TermRatio = IV30 / IV90
+    TermRatio = IV30 / IV90D
     - > 1.1 → 短端昂贵 (事件前/恐慌)
     - < 0.9 → 正常陡峭结构
     
@@ -186,7 +186,11 @@ def compute_term_structure(rec: Dict[str, Any]) -> tuple:
         (ratio_value, ratio_string): 数值和描述字符串
     """
     iv30 = rec.get("IV30")
-    iv90 = rec.get("IV90")
+    if iv30 is None:
+        iv30 = rec.get("IV_30D")
+    iv90 = rec.get("IV_90D")
+    if iv90 is None:
+        iv90 = rec.get("IV90D") or rec.get("IV90")
     
     if isinstance(iv30, (int, float)) and isinstance(iv90, (int, float)) and iv90 > 0:
         ratio = iv30 / iv90
