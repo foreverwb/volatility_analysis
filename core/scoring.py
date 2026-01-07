@@ -10,6 +10,7 @@ from .metrics import (
     compute_volume_bias, compute_notional_bias, compute_callput_ratio,
     compute_ivrv, compute_iv_ratio, compute_regime_ratio,
     compute_spot_vol_correlation_score, compute_active_open_ratio,
+    compute_term_structure,
     parse_earnings_date, days_until
 )
 
@@ -198,9 +199,19 @@ def compute_vol_score(
     elif regime <= cfg["regime_calm"]:
         regime_term = -0.2
     
+    # 期限结构修正
+    term_ratio, _ = compute_term_structure(rec)
+    term_buy = 0.0
+    term_sell = 0.0
+    if isinstance(term_ratio, (int, float)):
+        if term_ratio > 1.1:
+            term_buy = 0.3
+        elif term_ratio < 0.9:
+            term_sell = 0.2
+    
     # 汇总
-    buy_side = 0.8 * discount_term + ivchg_buy + cheap_boost + earn_boost + regime_term
-    sell_side = sell_pressure + rich_pressure + ivchg_sell + fear_sell
+    buy_side = 0.8 * discount_term + ivchg_buy + cheap_boost + earn_boost + regime_term + term_buy
+    sell_side = sell_pressure + rich_pressure + ivchg_sell + fear_sell + term_sell
     vol_score = float(buy_side - sell_side)
     
     # v2.3.2: 多腿修正

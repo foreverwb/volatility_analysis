@@ -37,6 +37,14 @@ from .oi_fetcher import (
     fetch_total_oi, get_oi_with_delta, batch_fetch_oi,
     get_oi_info, clear_oi_cache
 )
+
+from .term_structure import (
+    analyze_term_structure, 
+    get_term_structure_display,
+    get_term_structure_color,
+    calculate_term_structure_score,
+    TermStructurePattern
+)
 __all__ = [
     # 配置
     'DEFAULT_CFG', 'INDEX_TICKERS', 'get_dynamic_thresholds', 'validate_config',
@@ -78,6 +86,13 @@ __all__ = [
     # v2.3.3: OI 数据
     'fetch_total_oi', 'get_oi_with_delta', 'batch_fetch_oi',
     'get_oi_info', 'clear_oi_cache',
+    
+    # 期限结构
+    'analyze_term_structure', 
+    'get_term_structure_display',
+    'get_term_structure_color',
+    'calculate_term_structure_score',
+    'TermStructurePattern',
 ]
 
-__version__ = '2.3.3'
+__version__ = '2.5'

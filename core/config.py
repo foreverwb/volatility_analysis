@@ -1,6 +1,6 @@
 """
-配置常量和默认阈值 - v2.3.2 增强版
-新增可配置的修正系数
+配置常量和默认阈值 - v2.5.0
+✨ NEW: 期限结构识别配置
 """
 
 # 全局默认阈值配置
@@ -58,26 +58,63 @@ DEFAULT_CFG = {
     "penalty_extreme_chg": 20.0,
     "penalty_vol_pct_thresh": 0.40,
     
-    # ========== 🟩 v2.3.2 新增配置 ==========
-    
-    # ActiveOpenRatio 阈值
+    # ========== ActiveOpenRatio 配置 ==========
     "active_open_ratio_bull": 0.05,
     "active_open_ratio_bear": -0.05,
+    "active_open_ratio_beta": 0.5,
     
-    # 🔧 NEW: ActiveOpenRatio 修正强度系数 β
-    "active_open_ratio_beta": 0.5,  # 控制 AOR 对方向分数的影响强度
+    # ========== 跨期一致性配置 ==========
+    "consistency_strong": 0.6,
+    "consistency_days": 5,
+    "consistency_weight": 0.3,
     
-    # 跨期一致性配置
-    "consistency_strong": 0.6,      # 一致性阈值
-    "consistency_days": 5,           # 计算天数
-    
-    # 🔧 NEW: 跨期一致性修正系数
-    "consistency_weight": 0.3,       # 原为硬编码 0.3，现可配置
-    
-    # 结构置信度修正阈值
+    # ========== 结构置信度配置 ==========
     "multileg_conf_thresh": 40.0,
     "singleleg_conf_thresh": 70.0,
     "contingent_conf_thresh": 10.0,
+    
+    # ========== ✨ NEW: 期限结构配置 ==========
+    
+    # 是否启用期限结构分析
+    "enable_term_structure": True,
+    
+    # 是否让期限结构影响 Vol Score
+    "enable_term_structure_adjustment": True,
+    
+    # 期限结构斜率判断阈值（百分点）
+    # 例如：threshold=2.0 表示斜率超过 ±2% 时认为有显著变化
+    "term_structure_threshold": 2.0,
+    
+    # 期限结构权重（对 Vol Score 的影响强度）
+    # 范围: 0.0 - 1.0
+    # 0.0 = 不影响
+    # 1.0 = 完全按期限结构调整
+    "term_structure_weight": 0.8,
+    
+    # ========== 期限结构形态权重配置 ==========
+    # 用于 calculate_term_structure_score() 函数
+    # 可根据实际交易经验调整
+    
+    # 短期倒挂 - 买波信号
+    "ts_short_backwardation_score": 0.6,
+    
+    # 短期低位 - 强买波信号
+    "ts_short_undervalued_score": 0.8,
+    
+    # 正常陡峭 - 卖波信号
+    "ts_normal_upward_score": -0.5,
+    
+    # 远期过高 - 卖远期
+    "ts_long_steep_score": -0.4,
+    
+    # 全面倒挂 - 观望
+    "ts_full_backwardation_score": 0.0,
+    
+    # 中期突起 - 避开中期
+    "ts_mid_hump_score": -0.2,
+    
+    # 平坦/混合 - 中性
+    "ts_flat_or_mixed_score": 0.0,
 }
 
 # 指数类标的
@@ -101,10 +138,12 @@ def get_dynamic_thresholds(symbol: str, base_cfg: dict) -> dict:
         cfg["putpct_bear"] = 65.0
         cfg["putpct_bull"] = 50.0
         cfg["callput_ratio_bull"] = 1.0
+        
+        # ✨ NEW: 指数期限结构通常更平缓
+        cfg["term_structure_threshold"] = 1.5  # 降低阈值
     return cfg
 
 
-# 🔧 NEW: 配置验证函数
 def validate_config(cfg: dict) -> bool:
     """
     验证配置参数的合理性
@@ -122,4 +161,78 @@ def validate_config(cfg: dict) -> bool:
     if not (1 <= cfg.get("consistency_days", 5) <= 30):
         raise ValueError("consistency_days must be in [1, 30]")
     
+    # ✨ NEW: 期限结构参数验证
+    if not (0.5 <= cfg.get("term_structure_threshold", 2.0) <= 10.0):
+        raise ValueError("term_structure_threshold must be in [0.5, 10.0]")
+    
+    if not (0.0 <= cfg.get("term_structure_weight", 0.8) <= 1.0):
+        raise ValueError("term_structure_weight must be in [0.0, 1.0]")
+    
     return True
+
+
+# ========== ✨ NEW: 期限结构帮助文档 ==========
+
+TERM_STRUCTURE_HELP = """
+期限结构识别功能使用说明
+=======================
+
+## 配置参数说明
+
+1. enable_term_structure (bool)
+   - 是否启用期限结构分析
+   - 默认: True
+   - 建议: 保持开启
+
+2. enable_term_structure_adjustment (bool)
+   - 是否让期限结构影响 Vol Score
+   - 默认: True
+   - 建议: 开启以获得更准确的波动评分
+
+3. term_structure_threshold (float)
+   - 斜率判断阈值（百分点）
+   - 默认: 2.0
+   - 范围: 0.5 - 10.0
+   - 说明: 
+     * 2.0 = 中等敏感度（推荐）
+     * 1.0 = 高敏感度（捕捉更多形态）
+     * 3.0 = 低敏感度（只识别明显形态）
+
+4. term_structure_weight (float)
+   - 期限结构对 Vol Score 的影响强度
+   - 默认: 0.8
+   - 范围: 0.0 - 1.0
+   - 说明:
+     * 0.0 = 不影响 Vol Score
+     * 0.5 = 中等影响
+     * 1.0 = 完全按期限结构调整
+
+## 形态权重配置
+
+各形态的得分权重可在配置中调整：
+- ts_short_backwardation_score: 短期倒挂（默认 +0.6）
+- ts_short_undervalued_score: 短期低位（默认 +0.8）
+- ts_normal_upward_score: 正常陡峭（默认 -0.5）
+- ts_long_steep_score: 远期过高（默认 -0.4）
+- ts_full_backwardation_score: 全面倒挂（默认 0.0）
+- ts_mid_hump_score: 中期突起（默认 -0.2）
+- ts_flat_or_mixed_score: 平坦/混合（默认 0.0）
+
+## 调优建议
+
+1. 保守交易者:
+   - term_structure_threshold = 3.0（降低噪音）
+   - term_structure_weight = 0.5（减少影响）
+
+2. 激进交易者:
+   - term_structure_threshold = 1.5（捕捉更多机会）
+   - term_structure_weight = 1.0（完全依赖期限结构）
+
+3. 指数交易:
+   - 系统已自动降低 threshold 到 1.5
+   - 因为指数期限结构通常更平缓
+
+4. 个股交易:
+   - 使用默认配置即可
+   - 个股期限结构波动更大
+"""
