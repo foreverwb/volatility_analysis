@@ -57,6 +57,65 @@ async function analyzeData() {
         // ✨ NEW: 标记 OI 是否被跳过
         var oiSkipped = false;
         
+        function handleCompletion(data) {
+            console.log('✅ 全部完成');
+            // 分析完成
+            updateLoadingProgress(symbolCount, symbolCount, '数据处理完成');
+            
+            // 等待一小段时间让用户看到100%
+            return new Promise(function(resolve) {
+                setTimeout(resolve, 500);
+            }).then(function() {
+                // 隐藏 Loading
+                hideLoading();
+                
+                // 处理结果
+                var oiStats = data.oi_stats || {};
+                var message = data.message;
+                
+                // ✨ NEW: 根据 OI 状态显示不同消息
+                if (oiStats.skipped) {
+                    message += ' ⏰';
+                    showMessage(message, 'warning');
+                } else if (oiStats.with_delta) {
+                    message += ' (OI数据: ' + oiStats.with_delta + '/' + oiStats.total + ')';
+                    showMessage(message, 'success');
+                } else {
+                    showMessage(message, 'success');
+                }
+                
+                document.getElementById('dataInput').value = '';
+                
+                var newDates = new Set();
+                if (data.results && Array.isArray(data.results)) {
+                    data.results.forEach(function(r) {
+                        var date = r.timestamp.split(' ')[0];
+                        newDates.add(date);
+                    });
+                    
+                    // 🔴 先清空画布，再添加新数据
+                    AppState.canvasRecords = data.results;
+                }
+                
+                return loadRecords().then(function() {
+                    return loadDates();
+                }).then(function() {
+                    // 重绘画布
+                    drawQuadrant();
+                    
+                    newDates.forEach(function(date) {
+                        AppState.expandedDates.add(date);
+                        var content = document.getElementById('content-' + date);
+                        var toggle = document.getElementById('toggle-' + date);
+                        if (content && toggle) {
+                            content.classList.add('expanded');
+                            toggle.classList.add('expanded');
+                        }
+                    });
+                });
+            });
+        }
+        
         // 🟢 读取流
         var loopCount = 0;
         while (true) {
@@ -126,15 +185,30 @@ async function analyzeData() {
                             }
                             break;
                             
+                        case 'oi_start':
+                            console.log('✓ OI 获取开始，预计:', data.estimated_time);
+                            updateLoadingProgress(
+                                0,
+                                symbolCount,
+                                `正在获取 OI 数据（预计 ${Math.ceil(data.estimated_time)} 秒）...`
+                            );
+                            break;
+                            
                         case 'progress':
+                        case 'oi_progress': {
                             // 🟢 实时更新进度
-                            console.log(`📈 进度更新: ${data.completed}/${data.total} (${data.percentage}%) - ${data.symbol}`);
+                            var percentage = data.percentage;
+                            if (percentage === undefined && data.total) {
+                                percentage = Math.round((data.completed / data.total) * 100);
+                            }
+                            console.log(`📈 进度更新: ${data.completed}/${data.total} (${percentage}%) - ${data.symbol}`);
                             updateLoadingProgress(
                                 data.completed, 
                                 data.total, 
-                                `正在获取 OI 数据: ${data.symbol} (${data.percentage}%)`
+                                `正在获取 OI 数据: ${data.symbol} (${percentage}%)`
                             );
                             break;
+                        }
                             
                         case 'oi_complete':
                             console.log('✓ OI 获取完成，成功:', data.success, '跳过:', data.skipped);
@@ -164,60 +238,16 @@ async function analyzeData() {
                             );
                             break;
                             
+                        case 'analysis_complete':
                         case 'complete':
-                            console.log('✅ 全部完成');
-                            // 分析完成
-                            updateLoadingProgress(symbolCount, symbolCount, '数据处理完成');
+                            await handleCompletion(data);
+                            break;
                             
-                            // 等待一小段时间让用户看到100%
-                            await new Promise(resolve => setTimeout(resolve, 500));
-                            
-                            // 隐藏 Loading
-                            hideLoading();
-                            
-                            // 处理结果
-                            var oiStats = data.oi_stats || {};
-                            var message = data.message;
-                            
-                            // ✨ NEW: 根据 OI 状态显示不同消息
-                            if (oiStats.skipped) {
-                                message += ' ⏰';
-                                showMessage(message, 'warning');
-                            } else if (oiStats.with_delta) {
-                                message += ` (OI数据: ${oiStats.with_delta}/${oiStats.total})`;
-                                showMessage(message, 'success');
-                            } else {
-                                showMessage(message, 'success');
+                        case 'iv_task_created':
+                            console.log('🕒 IV 后台任务创建:', data.task_id);
+                            if (data.message) {
+                                showMessage(data.message, 'info');
                             }
-                            
-                            document.getElementById('dataInput').value = '';
-                            
-                            var newDates = new Set();
-                            if (data.results && Array.isArray(data.results)) {
-                                data.results.forEach(function(r) {
-                                    var date = r.timestamp.split(' ')[0];
-                                    newDates.add(date);
-                                });
-                                
-                                // 🔴 先清空画布，再添加新数据
-                                AppState.canvasRecords = data.results;
-                            }
-                            
-                            await loadRecords();
-                            await loadDates();
-                            
-                            // 重绘画布
-                            drawQuadrant();
-                            
-                            newDates.forEach(function(date) {
-                                AppState.expandedDates.add(date);
-                                var content = document.getElementById('content-' + date);
-                                var toggle = document.getElementById('toggle-' + date);
-                                if (content && toggle) {
-                                    content.classList.add('expanded');
-                                    toggle.classList.add('expanded');
-                                }
-                            });
                             break;
                             
                         case 'error':
