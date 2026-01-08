@@ -1,11 +1,7 @@
 """
-期权策略量化分析系统 v2.4.0
+
 Flask 主应用入口
 
-✨ v2.4.0 新增优化：
-1. 优化数据获取顺序：先 OI（快）→ 后 IV（慢）
-2. IV 获取改为并发模式
-3. 增强日志可读性
 """
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response, stream_with_context
 import json
@@ -23,6 +19,12 @@ from core import (
 )
 from core.oi_fetcher import batch_fetch_oi, auto_tune_workers, estimate_fetch_time
 from core.futu_option_iv import fetch_iv_term_structure
+from core.background_tasks import (
+    get_task_manager, 
+    create_iv_fetch_task,
+    execute_iv_fetch_task,
+    TaskStatus
+)
 app = Flask(__name__)
 
 DATA_FILE = 'analysis_records.json'
@@ -152,9 +154,7 @@ def index():
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze():
-    """
-    分析数据接口 - v2.4.0 优化版
-    
+    """    
     POST /api/analyze?ignore_earnings=false
     Body: { "records": [...] }
     
@@ -392,18 +392,22 @@ def update_config():
 @app.route('/api/analyze/stream', methods=['POST'])
 def analyze_stream():
     """
-    流式分析接口 - v2.4.0 优化版
+    流式分析接口 - v2.6.0 异步优化版
     
-    ✨ 优化: 先获取 OI（快）→ 再获取 IV（慢）
+    ✨ 优化策略：
+    1. 优先获取 ΔOI（快，~30秒）
+    2. 使用现有 IV 数据进行初步分析
+    3. 立即返回结果给用户
+    4. 后台启动 IV 获取任务
+    5. IV 完成后推送更新通知
     
-    POST /api/analyze/stream?ignore_earnings=false
+    POST /api/analyze/stream?ignore_earnings=false&async_iv=true
     Body: { "records": [...] }
-    
-    返回 Server-Sent Events (SSE) 流
     """
     def generate():
         try:
             ignore_earnings = request.args.get('ignore_earnings', 'false').lower() == 'true'
+            async_iv = request.args.get('async_iv', 'true').lower() == 'true'  # ✨ 新增参数
             records = request.json.get('records', [])
             
             if not isinstance(records, list) or len(records) == 0:
@@ -413,25 +417,22 @@ def analyze_stream():
             symbols = list(set(r.get('symbol', '') for r in records if r.get('symbol')))
             num_symbols = len(symbols)
             
-            yield f"data: {json.dumps({'type': 'init', 'total': num_symbols})}\n\n"
+            yield f"data: {json.dumps({'type': 'init', 'total': num_symbols, 'async_iv': async_iv})}\n\n"
             
             skip_oi = should_skip_oi_fetch()
             
-            # ========== 1️⃣ 先获取 OI 数据 ==========
+            # ========== 1️⃣ 优先获取 OI 数据（快） ==========
             oi_data = {}
             
             if skip_oi:
-                info_msg = {'type': 'info', 'message': '当前时间早于 18:00 CST，跳过 OI 数据获取', 'workers': 0, 'estimated_time': 0}
+                info_msg = {'type': 'info', 'message': '当前时间早于 18:00 CST，跳过 OI 数据获取'}
                 yield f"data: {json.dumps(info_msg)}\n\n"
-                
-                complete_msg = {'type': 'oi_complete', 'success': 0, 'skipped': True}
-                yield f"data: {json.dumps(complete_msg)}\n\n"
+                yield f"data: {json.dumps({'type': 'oi_complete', 'success': 0, 'skipped': True})}\n\n"
             else:
                 auto_tuned_workers = auto_tune_workers(num_symbols)
                 estimated_time = estimate_fetch_time(num_symbols, auto_tuned_workers)
                 
-                info_data = {'type': 'info', 'workers': auto_tuned_workers, 'estimated_time': estimated_time}
-                yield f"data: {json.dumps(info_data)}\n\n"
+                yield f"data: {json.dumps({'type': 'oi_start', 'estimated_time': estimated_time})}\n\n"
                 
                 progress_queue = Queue()
                 fetch_error = None
@@ -473,11 +474,10 @@ def analyze_stream():
                         
                         else:
                             progress_msg = {
-                                'type': 'progress',
+                                'type': 'oi_progress',
                                 'completed': progress_data['completed'],
                                 'total': progress_data['total'],
-                                'symbol': progress_data['symbol'],
-                                'percentage': round((progress_data['completed'] / progress_data['total']) * 100, 1)
+                                'symbol': progress_data['symbol']
                             }
                             yield f"data: {json.dumps(progress_msg)}\n\n"
                     
@@ -493,30 +493,18 @@ def analyze_stream():
                     yield f"data: {json.dumps({'type': 'error', 'error': fetch_error})}\n\n"
                     return
             
-            # ========== 2️⃣ 再获取 IV 数据 ==========
-            yield f"data: {json.dumps({'type': 'info', 'message': '开始获取 IV 数据...'})}\n\n"
+            # ========== 2️⃣ 使用现有 IV 数据进行初步分析 ==========
+            yield f"data: {json.dumps({'type': 'info', 'message': '使用现有 IV 数据进行分析...'})}\n\n"
             
-            iv_term_data = fetch_iv_term_structure(symbols, max_workers=5)
-            
-            yield f"data: {json.dumps({'type': 'iv_complete'})}\n\n"
-            
-            # ========== 3️⃣ 分析数据 ==========
+            # 注意：不主动获取新 IV，只用 records 中已有的
             results = []
             errors = []
             
             for i, record in enumerate(records):
                 try:
                     symbol = record.get('symbol', '')
-                    symbol_upper = symbol.upper()
-
-                    if symbol_upper in iv_term_data:
-                        iv_values = iv_term_data[symbol_upper]
-                        for key, value in iv_values.items():
-                            if value is not None:
-                                record[key] = value
-                        if iv_values.get("IV_90D") is not None:
-                            record["IV90"] = iv_values["IV_90D"]
                     
+                    # 注入 OI 数据
                     if not skip_oi and symbol in oi_data:
                         current_oi, delta_oi = oi_data[symbol]
                         if delta_oi is not None:
@@ -533,17 +521,17 @@ def analyze_stream():
                     results.append(analysis)
                     
                     if i % 5 == 0 or i == len(records) - 1:
-                        analyze_progress = {
+                        yield f"data: {json.dumps({
                             'type': 'analyze_progress', 
                             'completed': i + 1, 
                             'total': len(records)
-                        }
-                        yield f"data: {json.dumps(analyze_progress)}\n\n"
+                        })}\n\n"
                     
                 except Exception as e:
                     error_msg = f"标的 {record.get('symbol', f'#{i+1}')} 分析失败: {str(e)}"
                     errors.append(error_msg)
             
+            # ========== 3️⃣ 保存初步结果 ==========
             if results:
                 all_data = load_data()
                 new_records_map = {}
@@ -564,14 +552,15 @@ def analyze_stream():
                 all_data = filtered_old_data + results
                 save_data(all_data)
             
-            message = f'成功分析 {len(results)} 个标的'
+            message = f'✓ 初步分析完成 {len(results)} 个标的'
             if errors:
-                message += f',{len(errors)} 个失败'
+                message += f', {len(errors)} 个失败'
             if skip_oi:
                 message += ' (已跳过 OI 数据获取)'
             
-            final_data = {
-                'type': 'complete',
+            # ========== 4️⃣ 返回初步结果 ==========
+            initial_result = {
+                'type': 'analysis_complete',
                 'message': message,
                 'results': results,
                 'errors': errors if errors else None,
@@ -583,12 +572,196 @@ def analyze_stream():
                 }
             }
             
-            yield f"data: {json.dumps(final_data)}\n\n"
+            yield f"data: {json.dumps(initial_result)}\n\n"
+            
+            # ========== 5️⃣ 启动后台 IV 获取任务 ==========
+            if async_iv:
+                # 获取需要更新 IV 的 symbols（IV 数据缺失或过期）
+                symbols_need_iv = []
+                for record in records:
+                    symbol = record.get('symbol', '')
+                    iv30 = record.get('IV30') or record.get('IV_30D')
+                    if iv30 is None or iv30 == 0:
+                        symbols_need_iv.append(symbol)
+                
+                if symbols_need_iv:
+                    # 创建后台任务
+                    task_manager = get_task_manager()
+                    
+                    def on_iv_complete(task_id, iv_results):
+                        """IV 获取完成后的回调"""
+                        print(f"\n🎉 IV 任务完成: {task_id}")
+                        print(f"   成功获取: {sum(1 for data in iv_results.values() if data.get('IV_30D'))} symbols")
+                        
+                        # 重新分析并更新数据
+                        updated_records = []
+                        for record in records:
+                            symbol = record.get('symbol', '').upper()
+                            if symbol in iv_results:
+                                iv_data = iv_results[symbol]
+                                for key, value in iv_data.items():
+                                    if value is not None:
+                                        record[key] = value
+                            
+                            try:
+                                analysis = calculate_analysis(
+                                    record,
+                                    ignore_earnings=ignore_earnings,
+                                    history_scores=get_history_scores(symbol),
+                                    skip_oi=skip_oi
+                                )
+                                updated_records.append(analysis)
+                            except Exception as e:
+                                print(f"⚠ 重新分析失败 {symbol}: {e}")
+                        
+                        # 保存更新后的数据
+                        if updated_records:
+                            all_data = load_data()
+                            new_records_map = {}
+                            for r in updated_records:
+                                date = r['timestamp'].split(' ')[0]
+                                symbol = r['symbol']
+                                key = (date, symbol)
+                                new_records_map[key] = r
+                            
+                            filtered_old_data = []
+                            for old_record in all_data:
+                                date = old_record.get('timestamp', '').split(' ')[0]
+                                symbol = old_record.get('symbol', '')
+                                key = (date, symbol)
+                                if key not in new_records_map:
+                                    filtered_old_data.append(old_record)
+                            
+                            all_data = filtered_old_data + updated_records
+                            save_data(all_data)
+                    
+                    task_id = create_iv_fetch_task(symbols_need_iv, on_complete=on_iv_complete)
+                    
+                    # 启动后台执行
+                    execute_iv_fetch_task(task_id, symbols_need_iv)
+                    
+                    # 通知前端任务已创建
+                    from core.futu_option_iv import FutuBatchController
+                    controller = FutuBatchController()
+                    batch_config = controller.calculate_batch_config(len(symbols_need_iv))
+                    
+                    yield f"data: {json.dumps({
+                        'type': 'iv_task_created',
+                        'task_id': task_id,
+                        'symbols_count': len(symbols_need_iv),
+                        'estimated_time': batch_config.estimated_time,
+                        'message': f'后台获取 IV 数据中... (预计 {batch_config.estimated_time/60:.1f} 分钟)'
+                    })}\n\n"
+                else:
+                    yield f"data: {json.dumps({
+                        'type': 'info',
+                        'message': '所有标的已有 IV 数据，无需后台更新'
+                    })}\n\n"
             
         except Exception as e:
             import traceback
             traceback.print_exc()
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+    
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive'
+        }
+    )
+
+
+# ========== 3. 新增任务状态查询接口 ==========
+
+@app.route('/api/tasks/<task_id>', methods=['GET'])
+def get_task_status(task_id):
+    """
+    查询后台任务状态
+    
+    GET /api/tasks/{task_id}
+    
+    Returns:
+        {
+            "task_id": "...",
+            "status": "running" | "completed" | "failed",
+            "progress": 45,
+            "completed_symbols": 15,
+            "total_symbols": 32,
+            "created_at": "...",
+            "completed_at": "..."
+        }
+    """
+    try:
+        task_manager = get_task_manager()
+        task = task_manager.get_task(task_id)
+        
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
+        
+        return jsonify(task.to_dict())
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/tasks', methods=['GET'])
+def list_tasks():
+    """
+    列出所有任务
+    
+    GET /api/tasks?status=running
+    """
+    try:
+        task_manager = get_task_manager()
+        tasks = task_manager.get_all_tasks()
+        
+        # 过滤（可选）
+        status_filter = request.args.get('status')
+        if status_filter:
+            tasks = [t for t in tasks if t.status.value == status_filter]
+        
+        return jsonify([t.to_dict() for t in tasks])
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ========== 4. 新增任务完成通知（SSE 推送） ==========
+
+@app.route('/api/tasks/<task_id>/stream', methods=['GET'])
+def stream_task_status(task_id):
+    """
+    实时推送任务状态（SSE）
+    
+    GET /api/tasks/{task_id}/stream
+    
+    前端可以订阅此接口，实时接收任务更新
+    """
+    def generate():
+        task_manager = get_task_manager()
+        task = task_manager.get_task(task_id)
+        
+        if not task:
+            yield f"data: {json.dumps({'type': 'error', 'error': 'Task not found'})}\n\n"
+            return
+        
+        # 发送初始状态
+        yield f"data: {json.dumps({'type': 'status', 'data': task.to_dict()})}\n\n"
+        
+        # 轮询任务状态（每2秒检查一次）
+        while task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+            time.sleep(2)
+            task = task_manager.get_task(task_id)
+            
+            if task:
+                yield f"data: {json.dumps({'type': 'status', 'data': task.to_dict()})}\n\n"
+        
+        # 任务完成
+        if task:
+            yield f"data: {json.dumps({'type': 'complete', 'data': task.to_dict()})}\n\n"
     
     return Response(
         stream_with_context(generate()),
@@ -627,20 +800,24 @@ register_swing_api(app)
 
 if __name__ == '__main__':
     print("\n" + "="*80)
-    print("期权策略量化分析系统 v2.4.0")
+    print("期权策略量化分析系统 v2.6.0 - 异步优化版")
     print("="*80)
     print("\n📡 API 端点:")
-    print("   POST /api/analyze         - 标准分析接口")
-    print("   POST /api/analyze/stream  - 流式分析接口（推荐）")
-    print("   GET  /api/swing/params/<symbol>")
-    print("   POST /api/swing/params/batch")
-    print("\n✨ v2.4.0 优化:")
-    print("   • IV 数据并发获取（5线程）")
-    print("   • 优化获取顺序：先 OI（快）→ 后 IV（慢）")
-    print("   • 精简日志输出，增强可读性")
+    print("   POST /api/analyze/stream      - 流式分析接口（异步IV）")
+    print("   GET  /api/tasks/<task_id>     - 查询任务状态")
+    print("   GET  /api/tasks               - 列出所有任务")
+    print("   GET  /api/tasks/<task_id>/stream - 实时推送任务状态")
+    print("   • ΔOI 优先获取（~30秒）")
+    print("   • 立即返回初步分析结果")
+    print("   • IV 数据后台异步更新（~2分钟）")
+    print("   • 支持任务状态实时查询")
     print("\n⏰ 时间限制:")
     print("   • 18:00 CST 之前跳过 OI 数据获取")
     print("="*80 + "\n")
+    
+    # 清理旧任务
+    task_manager = get_task_manager()
+    task_manager.cleanup_old_tasks(max_age_hours=24)
     
     try:
         app.run(debug=True, host='0.0.0.0', port=8668)

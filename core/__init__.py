@@ -45,6 +45,14 @@ from .term_structure import (
     calculate_term_structure_score,
     TermStructurePattern
 )
+
+from .futu_option_iv import FutuBatchController
+
+from .background_tasks import (
+    BackgroundTaskManager, TaskStatus, BackgroundTask,
+    get_task_manager, create_iv_fetch_task, execute_iv_fetch_task
+)
+
 __all__ = [
     # 配置
     'DEFAULT_CFG', 'INDEX_TICKERS', 'get_dynamic_thresholds', 'validate_config',
@@ -93,6 +101,12 @@ __all__ = [
     'get_term_structure_color',
     'calculate_term_structure_score',
     'TermStructurePattern',
+    
+    'FutuBatchController',
+    
+    # 后台任务管理
+    'BackgroundTaskManager', 'TaskStatus', 'BackgroundTask',
+    'get_task_manager', 'create_iv_fetch_task', 'execute_iv_fetch_task',
 ]
 
 __version__ = '2.5'
