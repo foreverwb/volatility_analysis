@@ -212,10 +212,9 @@ def _collect_expirations(
     while window_start <= end_date:
         window_end = min(window_start + timedelta(days=window_days), end_date)
         for option_type in option_types:
-            chain_limiter.acquire()
-
-            ret, data = _get_option_chain_window(
+            ret, data = _fetch_option_chain_with_retry(
                 quote_ctx=quote_ctx,
+                chain_limiter=chain_limiter,
                 code=code,
                 start_date=window_start.strftime("%Y-%m-%d"),
                 end_date=window_end.strftime("%Y-%m-%d"),
@@ -273,6 +272,35 @@ def _get_option_chain_window(
             last_error = exc
             continue
     raise TypeError(f"get_option_chain 参数不兼容: {last_error}")
+
+
+def _fetch_option_chain_with_retry(
+    quote_ctx: OpenQuoteContext,
+    chain_limiter: RateLimiter,
+    code: str,
+    start_date: str,
+    end_date: str,
+    option_type: OptionType,
+    max_retries: int = 2
+) -> Tuple[int, Any]:
+    last_data = None
+    for attempt in range(max_retries + 1):
+        chain_limiter.acquire()
+        ret, data = _get_option_chain_window(
+            quote_ctx=quote_ctx,
+            code=code,
+            start_date=start_date,
+            end_date=end_date,
+            option_type=option_type
+        )
+        last_data = data
+        if ret == RET_OK:
+            return ret, data
+        if isinstance(data, str) and "频率太高" in data and attempt < max_retries:
+            time.sleep(30.0)
+            continue
+        return ret, data
+    return ret, last_data
 
 
 def _get_expiry_date(record: Dict) -> Optional[str]:
