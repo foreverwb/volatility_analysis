@@ -6,10 +6,10 @@
 /**
  * 显示详情抽屉
  */
-function formatTermStructure(rawValue) {
+function formatTermStructure(rawValue, record) {
     if (!rawValue || rawValue === 'N/A') return 'N/A';
     if (rawValue.includes('(')) {
-        return buildTermStructureDisplay(rawValue);
+        return buildTermStructureDisplay(rawValue, record);
     }
 
     var shortMatch = rawValue.match(/7\/30\s+([0-9.]+)/);
@@ -23,7 +23,7 @@ function formatTermStructure(rawValue) {
     if (isNaN(short) || isNaN(mid) || isNaN(long)) return rawValue;
 
     var label = classifyTermStructure(short, mid, long);
-    return buildTermStructureDisplay(label + ' | ' + rawValue);
+    return buildTermStructureDisplay(label + ' | ' + rawValue, record);
 }
 
 function classifyTermStructure(short, mid, long) {
@@ -48,16 +48,49 @@ function classifyTermStructure(short, mid, long) {
     return '正常陡峭 (Normal steep)';
 }
 
-function buildTermStructureDisplay(rawValue) {
+function buildTermStructureDisplay(rawValue, record) {
     var parts = rawValue.split(' | ');
     if (parts.length < 2) return rawValue;
 
     var label = parts[0];
     var baseRatio = parts[1];
-    var ratioParts = parts.slice(2).join(' | ');
-    var ivHint = ratioParts ? ' -> IV7、IV30、IV60、IV90' : '';
+    var ivLine = buildIvLine(record);
 
-    return label + '<br>' + baseRatio + '<br>' + ratioParts + ivHint;
+    return label + '<br>' + baseRatio + '<br>' + ivLine;
+}
+
+function buildIvLine(record) {
+    var raw = (record && record.raw_data) ? record.raw_data : {};
+    var iv7 = readIvValue(record, raw, 'IV7');
+    var iv30 = readIvValue(record, raw, 'IV30');
+    var iv60 = readIvValue(record, raw, 'IV60');
+    var iv90 = readIvValue(record, raw, 'IV90');
+
+    if (iv7 === null && iv30 === null && iv60 === null && iv90 === null) {
+        return 'IV7 N/A | IV30 N/A | IV60 N/A | IV90 N/A';
+    }
+
+    return 'IV7 ' + formatIvValue(iv7) +
+        ' | IV30 ' + formatIvValue(iv30) +
+        ' | IV60 ' + formatIvValue(iv60) +
+        ' | IV90 ' + formatIvValue(iv90);
+}
+
+function readIvValue(record, raw, key) {
+    if (record && record[key] !== undefined && record[key] !== null) {
+        return record[key];
+    }
+    if (raw && raw[key] !== undefined && raw[key] !== null) {
+        return raw[key];
+    }
+    return null;
+}
+
+function formatIvValue(value) {
+    if (value === null || value === undefined) return 'N/A';
+    var num = parseFloat(value);
+    if (isNaN(num)) return 'N/A';
+    return num.toFixed(2);
 }
 
 function showDrawer(timestamp, symbol) {
@@ -81,7 +114,7 @@ function showDrawer(timestamp, symbol) {
     // 高级指标数据
     var spotVolCorr = record.spot_vol_corr_score || 0;
     var isSqueeze = record.is_squeeze || false;
-    var termStructure = formatTermStructure(record.term_structure_ratio || 'N/A');
+    var termStructure = formatTermStructure(record.term_structure_ratio || 'N/A', record);
     
     // v2.3.2 字段
     var activeOpenRatio = record.active_open_ratio || 0;
