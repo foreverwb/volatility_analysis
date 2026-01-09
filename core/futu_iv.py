@@ -103,29 +103,31 @@ def _fetch_symbol_iv_terms(
     end_date = today + timedelta(days=max_days)
     expirations: Dict[str, List[str]] = defaultdict(list)
 
-    window_start = today
-    while window_start <= end_date:
-        window_end = min(window_start + timedelta(days=window_days), end_date)
-        chain_limiter.acquire()
+    _collect_expirations(
+        symbol=symbol,
+        code=code,
+        quote_ctx=quote_ctx,
+        chain_limiter=chain_limiter,
+        expirations=expirations,
+        start_date=today,
+        end_date=end_date,
+        window_days=window_days,
+        use_delta_filter=True
+    )
 
-        ret, data = _get_option_chain_window(
-            quote_ctx=quote_ctx,
+    if not expirations:
+        print(f"⚠ {symbol}: 期权链无结果，尝试去除 Delta 过滤")
+        _collect_expirations(
+            symbol=symbol,
             code=code,
-            start_date=window_start.strftime("%Y-%m-%d"),
-            end_date=window_end.strftime("%Y-%m-%d")
+            quote_ctx=quote_ctx,
+            chain_limiter=chain_limiter,
+            expirations=expirations,
+            start_date=today,
+            end_date=end_date,
+            window_days=window_days,
+            use_delta_filter=False
         )
-
-        if ret != RET_OK:
-            print(f"⚠ {symbol}: get_option_chain 失败: {data}")
-        else:
-            records = _dataframe_to_records(data)
-            for record in records:
-                expiry = _get_expiry_date(record)
-                option_code = record.get("code") or record.get("option_code")
-                if expiry and option_code:
-                    expirations[expiry].append(option_code)
-
-        window_start = window_end + timedelta(days=1)
 
     if not expirations:
         print(f"⚠ {symbol}: 无可用期权到期日")
@@ -154,13 +156,51 @@ def _dataframe_to_records(data) -> List[Dict]:
     return []
 
 
+def _collect_expirations(
+    symbol: str,
+    code: str,
+    quote_ctx: OpenQuoteContext,
+    chain_limiter: RateLimiter,
+    expirations: Dict[str, List[str]],
+    start_date: datetime.date,
+    end_date: datetime.date,
+    window_days: int,
+    use_delta_filter: bool
+) -> None:
+    window_start = start_date
+    while window_start <= end_date:
+        window_end = min(window_start + timedelta(days=window_days), end_date)
+        chain_limiter.acquire()
+
+        ret, data = _get_option_chain_window(
+            quote_ctx=quote_ctx,
+            code=code,
+            start_date=window_start.strftime("%Y-%m-%d"),
+            end_date=window_end.strftime("%Y-%m-%d"),
+            use_delta_filter=use_delta_filter
+        )
+
+        if ret != RET_OK:
+            print(f"⚠ {symbol}: get_option_chain 失败: {data}")
+        else:
+            records = _dataframe_to_records(data)
+            for record in records:
+                expiry = _get_expiry_date(record)
+                option_code = record.get("code") or record.get("option_code")
+                if expiry and option_code:
+                    expirations[expiry].append(option_code)
+
+        window_start = window_end + timedelta(days=1)
+
+
 def _get_option_chain_window(
     quote_ctx: OpenQuoteContext,
     code: str,
     start_date: str,
-    end_date: str
+    end_date: str,
+    use_delta_filter: bool
 ) -> Tuple[int, Any]:
-    params = OptionDataFilter(delta_min=0.45, delta_max=0.55)
+    params = OptionDataFilter(delta_min=0.45, delta_max=0.55) if use_delta_filter else None
     variants = [
         {"begin_time": start_date, "end_time": end_date},
         {"start_time": start_date, "end_time": end_date},
@@ -171,12 +211,13 @@ def _get_option_chain_window(
     last_error = None
     for variant in variants:
         try:
-            ret, data = quote_ctx.get_option_chain(
-                code,
-                option_type=OptionType.CALL,
-                data_filter=params,
+            kwargs = {
+                "option_type": OptionType.CALL,
                 **variant
-            )
+            }
+            if params is not None:
+                kwargs["data_filter"] = params
+            ret, data = quote_ctx.get_option_chain(code, **kwargs)
             return ret, data
         except TypeError as exc:
             last_error = exc
