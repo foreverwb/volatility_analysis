@@ -186,7 +186,7 @@ def _collect_expirations(
             records = _dataframe_to_records(data)
             for record in records:
                 expiry = _get_expiry_date(record)
-                option_code = record.get("code") or record.get("option_code")
+                option_code = _get_option_code(record)
                 if expiry and option_code:
                     expirations[expiry].append(option_code)
 
@@ -205,8 +205,11 @@ def _get_option_chain_window(
         {"begin_time": start_date, "end_time": end_date},
         {"start_time": start_date, "end_time": end_date},
         {"start_date": start_date, "end_date": end_date},
-        {"start": start_date, "end": end_date},
-        {}
+        {"start": start_date, "end": end_date}
+    ]
+    positional_variants = [
+        (start_date, end_date),
+        ()
     ]
     last_error = None
     for variant in variants:
@@ -222,14 +225,32 @@ def _get_option_chain_window(
         except TypeError as exc:
             last_error = exc
             continue
+    for args in positional_variants:
+        try:
+            kwargs = {"option_type": OptionType.CALL}
+            if params is not None:
+                kwargs["data_filter"] = params
+            ret, data = quote_ctx.get_option_chain(code, *args, **kwargs)
+            return ret, data
+        except TypeError as exc:
+            last_error = exc
+            continue
     raise TypeError(f"get_option_chain 参数不兼容: {last_error}")
 
 
 def _get_expiry_date(record: Dict) -> Optional[str]:
-    for key in ("expiry_date", "expire_date", "expiration_date", "expiry"):
+    for key in ("expiry_date", "expire_date", "expiration_date", "expiry", "strike_time", "strike_date"):
         value = record.get(key)
         if value:
             return str(value).split(" ")[0]
+    return None
+
+
+def _get_option_code(record: Dict) -> Optional[str]:
+    for key in ("code", "option_code", "contract_code", "security_code"):
+        value = record.get(key)
+        if value:
+            return str(value)
     return None
 
 
