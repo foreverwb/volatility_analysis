@@ -98,11 +98,12 @@ def fetch_iv_terms(
         quote_ctx.close()
 
     elapsed = time.time() - start_ts
+    elapsed_minutes = elapsed / 60.0
     success = sum(
         1 for v in results.values()
         if v.iv7 is not None or v.iv30 is not None or v.iv60 is not None or v.iv90 is not None
     )
-    print(f"✓ {success}/{total} successful in {elapsed:.1f}s")
+    print(f"✓ {success}/{total} successful in {elapsed_minutes:.1f}m")
     return results
 
 
