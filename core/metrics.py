@@ -224,10 +224,6 @@ def compute_term_structure(rec: Dict[str, Any]) -> tuple:
     """
     计算期限结构 (Term Structure)
     
-    TermRatio = IV30 / IV90
-    - > 1.1 → 短端昂贵 (事件前/恐慌)
-    - < 0.9 → 正常陡峭结构
-    
     Returns:
         (ratio_value, ratio_string): 数值和描述字符串
     """
@@ -236,13 +232,10 @@ def compute_term_structure(rec: Dict[str, Any]) -> tuple:
     if ratio is None:
         return (None, "N/A")
 
+    label = _classify_term_structure(ratios)
     ratio_str = f"{ratio:.2f}"
-    if ratio > 1.1:
-        ratio_str += " (倒挂/恐慌)"
-    elif ratio < 0.9:
-        ratio_str += " (陡峭/正常)"
 
-    parts = [ratio_str]
+    parts = [label, ratio_str]
     if "7_30" in ratios:
         parts.append(f"7/30 {ratios['7_30']:.2f}")
     if "30_60" in ratios:
@@ -250,6 +243,29 @@ def compute_term_structure(rec: Dict[str, Any]) -> tuple:
     if "60_90" in ratios:
         parts.append(f"60/90 {ratios['60_90']:.2f}")
     return (ratio, " | ".join(parts))
+
+
+def _classify_term_structure(ratios: Dict[str, float]) -> str:
+    short = ratios.get("7_30")
+    mid = ratios.get("30_60")
+    long = ratios.get("60_90")
+
+    if short is None or mid is None or long is None:
+        return "N/A"
+
+    if short > 1.05 and mid > 1.05 and long > 1.05:
+        return "全面倒挂 (Full inversion)"
+    if short > 1.05 and mid <= 1.0:
+        return "短期倒挂 (Short-term inversion)"
+    if mid > 1.05 and short <= 1.02 and long <= 1.0:
+        return "中期突起 (Mid-term bulge)"
+    if long > 1.05 and mid <= 1.0:
+        return "远期过高 (Far-term elevated)"
+    if short < 0.9 and mid >= 0.95:
+        return "短期低位 (Short-term low)"
+    if short < 1.0 and mid < 1.0 and long < 1.0:
+        return "正常陡峭 (Normal steep)"
+    return "正常陡峭 (Normal steep)"
 
 
 def parse_earnings_date(s: Optional[str]) -> Optional[date]:

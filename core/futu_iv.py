@@ -8,7 +8,13 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import os
 import time
 
-from futu import OpenQuoteContext, OptionDataFilter, OptionType, RET_OK
+from futu import OpenQuoteContext, OptionType, RET_OK
+
+
+@dataclass
+class OptionContract:
+    code: str
+    option_type: OptionType
 
 
 @dataclass
@@ -17,6 +23,7 @@ class IVTermResult:
     iv30: Optional[float] = None
     iv60: Optional[float] = None
     iv90: Optional[float] = None
+    total_oi: Optional[int] = None
 
 
 class RateLimiter:
@@ -36,12 +43,16 @@ class RateLimiter:
         self.calls.append(time.time())
 
 
-def estimate_iv_fetch_time(symbol_count: int, windows_per_symbol: int = 4) -> float:
+def estimate_iv_fetch_time(
+    symbol_count: int,
+    windows_per_symbol: int = 4,
+    option_type_count: int = 2
+) -> float:
     """
     根据接口限流估算 IV 获取耗时（秒）
     """
-    option_chain_calls = symbol_count * windows_per_symbol
-    snapshot_calls = symbol_count  # 近似按每个标的 1 次快照
+    option_chain_calls = symbol_count * windows_per_symbol * option_type_count
+    snapshot_calls = symbol_count  # 近似按每个标的 1 次快照（全链下将被低估）
 
     chain_batches = (option_chain_calls + 9) // 10
     snapshot_batches = (snapshot_calls + 59) // 60
@@ -149,7 +160,7 @@ def _fetch_symbol_iv_terms(
     code = symbol if "." in symbol else f"{market}.{symbol.upper()}"
     today = datetime.now().date()
     end_date = today + timedelta(days=max_days)
-    expirations: Dict[str, List[str]] = defaultdict(list)
+    expirations: Dict[str, List[OptionContract]] = defaultdict(list)
 
     _collect_expirations(
         symbol=symbol,
@@ -160,22 +171,8 @@ def _fetch_symbol_iv_terms(
         start_date=today,
         end_date=end_date,
         window_days=window_days,
-        use_delta_filter=True
+        option_types=[OptionType.CALL, OptionType.PUT]
     )
-
-    if not expirations:
-        print(f"⚠ {symbol}: 期权链无结果，尝试去除 Delta 过滤")
-        _collect_expirations(
-            symbol=symbol,
-            code=code,
-            quote_ctx=quote_ctx,
-            chain_limiter=chain_limiter,
-            expirations=expirations,
-            start_date=today,
-            end_date=end_date,
-            window_days=window_days,
-            use_delta_filter=False
-        )
 
     if not expirations:
         print(f"⚠ {symbol}: 无可用期权到期日")
@@ -183,12 +180,13 @@ def _fetch_symbol_iv_terms(
 
     snapshot_map = _fetch_snapshot_map(expirations, quote_ctx, snapshot_limiter)
     dte_points = _build_dte_points(today, expirations, snapshot_map)
+    total_oi = _sum_open_interest(snapshot_map)
     iv7 = _interpolate_iv(dte_points, 7)
     iv30 = _interpolate_iv(dte_points, 30)
     iv60 = _interpolate_iv(dte_points, 60)
     iv90 = _interpolate_iv(dte_points, 90)
 
-    return IVTermResult(iv7=iv7, iv30=iv30, iv60=iv60, iv90=iv90)
+    return IVTermResult(iv7=iv7, iv30=iv30, iv60=iv60, iv90=iv90, total_oi=total_oi)
 
 
 def _dataframe_to_records(data) -> List[Dict]:
@@ -204,34 +202,34 @@ def _collect_expirations(
     code: str,
     quote_ctx: OpenQuoteContext,
     chain_limiter: RateLimiter,
-    expirations: Dict[str, List[str]],
+    expirations: Dict[str, List[OptionContract]],
     start_date: datetime.date,
     end_date: datetime.date,
     window_days: int,
-    use_delta_filter: bool
+    option_types: List[OptionType]
 ) -> None:
     window_start = start_date
     while window_start <= end_date:
         window_end = min(window_start + timedelta(days=window_days), end_date)
-        chain_limiter.acquire()
+        for option_type in option_types:
+            ret, data = _fetch_option_chain_with_retry(
+                quote_ctx=quote_ctx,
+                chain_limiter=chain_limiter,
+                code=code,
+                start_date=window_start.strftime("%Y-%m-%d"),
+                end_date=window_end.strftime("%Y-%m-%d"),
+                option_type=option_type
+            )
 
-        ret, data = _get_option_chain_window(
-            quote_ctx=quote_ctx,
-            code=code,
-            start_date=window_start.strftime("%Y-%m-%d"),
-            end_date=window_end.strftime("%Y-%m-%d"),
-            use_delta_filter=use_delta_filter
-        )
-
-        if ret != RET_OK:
-            print(f"⚠ {symbol}: get_option_chain 失败: {data}")
-        else:
-            records = _dataframe_to_records(data)
-            for record in records:
-                expiry = _get_expiry_date(record)
-                option_code = _get_option_code(record)
-                if expiry and option_code:
-                    expirations[expiry].append(option_code)
+            if ret != RET_OK:
+                print(f"⚠ {symbol}: get_option_chain 失败: {data}")
+            else:
+                records = _dataframe_to_records(data)
+                for record in records:
+                    expiry = _get_expiry_date(record)
+                    option_code = _get_option_code(record)
+                    if expiry and option_code:
+                        expirations[expiry].append(OptionContract(option_code, option_type))
 
         window_start = window_end + timedelta(days=1)
 
@@ -241,9 +239,8 @@ def _get_option_chain_window(
     code: str,
     start_date: str,
     end_date: str,
-    use_delta_filter: bool
+    option_type: OptionType
 ) -> Tuple[int, Any]:
-    params = OptionDataFilter(delta_min=0.45, delta_max=0.55) if use_delta_filter else None
     variants = [
         {"begin_time": start_date, "end_time": end_date},
         {"start_time": start_date, "end_time": end_date},
@@ -258,11 +255,9 @@ def _get_option_chain_window(
     for variant in variants:
         try:
             kwargs = {
-                "option_type": OptionType.CALL,
+                "option_type": option_type,
                 **variant
             }
-            if params is not None:
-                kwargs["data_filter"] = params
             ret, data = quote_ctx.get_option_chain(code, **kwargs)
             return ret, data
         except TypeError as exc:
@@ -270,15 +265,42 @@ def _get_option_chain_window(
             continue
     for args in positional_variants:
         try:
-            kwargs = {"option_type": OptionType.CALL}
-            if params is not None:
-                kwargs["data_filter"] = params
+            kwargs = {"option_type": option_type}
             ret, data = quote_ctx.get_option_chain(code, *args, **kwargs)
             return ret, data
         except TypeError as exc:
             last_error = exc
             continue
     raise TypeError(f"get_option_chain 参数不兼容: {last_error}")
+
+
+def _fetch_option_chain_with_retry(
+    quote_ctx: OpenQuoteContext,
+    chain_limiter: RateLimiter,
+    code: str,
+    start_date: str,
+    end_date: str,
+    option_type: OptionType,
+    max_retries: int = 2
+) -> Tuple[int, Any]:
+    last_data = None
+    for attempt in range(max_retries + 1):
+        chain_limiter.acquire()
+        ret, data = _get_option_chain_window(
+            quote_ctx=quote_ctx,
+            code=code,
+            start_date=start_date,
+            end_date=end_date,
+            option_type=option_type
+        )
+        last_data = data
+        if ret == RET_OK:
+            return ret, data
+        if isinstance(data, str) and "频率太高" in data and attempt < max_retries:
+            time.sleep(30.0)
+            continue
+        return ret, data
+    return ret, last_data
 
 
 def _get_expiry_date(record: Dict) -> Optional[str]:
@@ -298,13 +320,13 @@ def _get_option_code(record: Dict) -> Optional[str]:
 
 
 def _fetch_snapshot_map(
-    expirations: Dict[str, List[str]],
+    expirations: Dict[str, List[OptionContract]],
     quote_ctx: OpenQuoteContext,
     snapshot_limiter: RateLimiter
 ) -> Dict[str, Dict]:
     codes = []
     for option_codes in expirations.values():
-        codes.extend(option_codes)
+        codes.extend(contract.code for contract in option_codes)
 
     snapshot_map: Dict[str, Dict] = {}
     chunk_size = 400
@@ -325,7 +347,7 @@ def _fetch_snapshot_map(
 
 def _build_dte_points(
     today,
-    expirations: Dict[str, List[str]],
+    expirations: Dict[str, List[OptionContract]],
     snapshot_map: Dict[str, Dict]
 ) -> List[Tuple[int, float]]:
     points = []
@@ -344,11 +366,13 @@ def _build_dte_points(
     return points
 
 
-def _pick_atm_iv(option_codes: List[str], snapshot_map: Dict[str, Dict]) -> Optional[float]:
+def _pick_atm_iv(option_contracts: List[OptionContract], snapshot_map: Dict[str, Dict]) -> Optional[float]:
     best_iv = None
     best_diff = None
-    for code in option_codes:
-        snapshot = snapshot_map.get(code)
+    for contract in option_contracts:
+        if contract.option_type != OptionType.CALL:
+            continue
+        snapshot = snapshot_map.get(contract.code)
         if not snapshot:
             continue
         delta = _get_snapshot_value(snapshot, ["option_delta", "delta"])
@@ -370,6 +394,18 @@ def _get_snapshot_value(snapshot: Dict, keys: List[str]) -> Optional[float]:
             except Exception:
                 return None
     return None
+
+
+def _sum_open_interest(snapshot_map: Dict[str, Dict]) -> Optional[int]:
+    total = 0
+    found = False
+    for snapshot in snapshot_map.values():
+        oi = _get_snapshot_value(snapshot, ["option_open_interest", "open_interest", "oi"])
+        if oi is None:
+            continue
+        found = True
+        total += int(oi)
+    return total if found else None
 
 
 def _normalize_iv(iv_value: float) -> float:

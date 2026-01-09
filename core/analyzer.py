@@ -182,21 +182,8 @@ def calculate_analysis(
     if days_to_earnings is not None and 0 < days_to_earnings <= 14:
         vol_factors.append(f"📅 财报 {days_to_earnings}天内")
     
-    if term_structure_val:
-        if term_structure_val > 1.1:
-            vol_factors.append("📉 期限倒挂 (恐慌)")
-        elif term_structure_val < 0.9:
-            vol_factors.append("📈 期限陡峭 (正常)")
-    if term_ratios:
-        ratio_parts = []
-        if "7_30" in term_ratios:
-            ratio_parts.append(f"7/30 {term_ratios['7_30']:.2f}")
-        if "30_60" in term_ratios:
-            ratio_parts.append(f"30/60 {term_ratios['30_60']:.2f}")
-        if "60_90" in term_ratios:
-            ratio_parts.append(f"60/90 {term_ratios['60_90']:.2f}")
-        if ratio_parts:
-            vol_factors.append("TS " + " ".join(ratio_parts))
+    if term_structure_str and term_structure_str != "N/A":
+        vol_factors.append(f"期限结构: {term_structure_str}")
     
     # ============ 🟢 构建返回结果 (VIX 提升到顶层) ============
     result = {
