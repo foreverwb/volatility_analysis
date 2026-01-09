@@ -11,7 +11,7 @@ from .metrics import (
     compute_volume_bias, compute_notional_bias, compute_callput_ratio,
     compute_ivrv, compute_iv_ratio, compute_regime_ratio,
     compute_spot_vol_correlation_score, detect_squeeze_potential,
-    compute_active_open_ratio, compute_term_structure,
+    compute_active_open_ratio, compute_term_structure, compute_term_structure_ratios,
     parse_earnings_date, days_until
 )
 from .scoring import compute_direction_score, compute_vol_score
@@ -89,6 +89,7 @@ def calculate_analysis(
     spot_vol_score = compute_spot_vol_correlation_score(normed)
     is_squeeze = detect_squeeze_potential(normed, effective_cfg)
     term_structure_val, term_structure_str = compute_term_structure(normed)
+    term_ratios = compute_term_structure_ratios(normed)
     
     # ✨ NEW: 条件计算 ActiveOpenRatio
     if skip_oi:
@@ -186,6 +187,16 @@ def calculate_analysis(
             vol_factors.append("📉 期限倒挂 (恐慌)")
         elif term_structure_val < 0.9:
             vol_factors.append("📈 期限陡峭 (正常)")
+    if term_ratios:
+        ratio_parts = []
+        if "7_30" in term_ratios:
+            ratio_parts.append(f"7/30 {term_ratios['7_30']:.2f}")
+        if "30_60" in term_ratios:
+            ratio_parts.append(f"30/60 {term_ratios['30_60']:.2f}")
+        if "60_90" in term_ratios:
+            ratio_parts.append(f"60/90 {term_ratios['60_90']:.2f}")
+        if ratio_parts:
+            vol_factors.append("TS " + " ".join(ratio_parts))
     
     # ============ 🟢 构建返回结果 (VIX 提升到顶层) ============
     result = {

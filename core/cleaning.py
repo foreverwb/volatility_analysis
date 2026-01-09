@@ -77,7 +77,7 @@ def clean_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     
     # 数值字段 (v2.3.2: 新增 ΔOI_1D)
     number_fields = [
-        'IV30', 'IV90', 'HV20', 'HV1Y', 'Volume', 'RelVolTo90D',
+        'IV7', 'IV30', 'IV60', 'IV90', 'HV20', 'HV1Y', 'Volume', 'RelVolTo90D',
         'CallVolume', 'PutVolume', 'RelNotionalTo90D', 'ΔOI_1D', 'DeltaOI_1D'
     ]
     for field in number_fields:

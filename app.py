@@ -23,6 +23,7 @@ from core import (
     calculate_analysis
 )
 from core.oi_fetcher import batch_fetch_oi, auto_tune_workers, estimate_fetch_time
+from core.futu_iv import fetch_iv_terms, estimate_iv_fetch_time
 app = Flask(__name__)
 
 DATA_FILE = 'analysis_records.json'
@@ -185,16 +186,29 @@ def analyze():
         if len(records) == 0:
             return jsonify({'error': '数据列表不能为空'}), 400
         
-        # ✨ NEW: 检查是否需要跳过 OI 获取
+        # ✨ NEW: 检查是否需要跳过盘后数据获取
         skip_oi = should_skip_oi_fetch()
+        skip_iv = skip_oi
         
         # 提取所有 symbol
         symbols = list(set(r.get('symbol', '') for r in records if r.get('symbol')))
         num_symbols = len(symbols)
         
-        # 初始化 OI 数据字典
+        # 初始化 IV / OI 数据字典
+        iv_data = {}
         oi_data = {}
-        
+
+        if skip_iv:
+            print(f"\n⏰ 当前时间早于 18:00 CST，跳过 IV 数据获取")
+        else:
+            iv_estimated_time = estimate_iv_fetch_time(num_symbols)
+            print(f"\n{'='*60}")
+            print("📊 IV 数据获取配置:")
+            print(f"   - 标的数量: {num_symbols}")
+            print(f"   - 预计耗时: {iv_estimated_time:.1f}s")
+            print(f"{'='*60}\n")
+            iv_data = fetch_iv_terms(symbols)
+
         if skip_oi:
             # ✨ 跳过 OI 获取
             print(f"\n⏰ 当前时间早于 18:00 CST，跳过 OI 数据获取")
@@ -221,6 +235,18 @@ def analyze():
             try:
                 symbol = record.get('symbol', '')
                 
+                # 注入 IV 数据（如果有）
+                iv_result = iv_data.get(symbol)
+                if iv_result:
+                    if iv_result.iv7 is not None:
+                        record['IV7'] = iv_result.iv7
+                    if iv_result.iv30 is not None:
+                        record['IV30'] = iv_result.iv30
+                    if iv_result.iv60 is not None:
+                        record['IV60'] = iv_result.iv60
+                    if iv_result.iv90 is not None:
+                        record['IV90'] = iv_result.iv90
+
                 # 注入 OI 数据（如果有）
                 if not skip_oi and symbol in oi_data:
                     current_oi, delta_oi = oi_data[symbol]
@@ -420,12 +446,25 @@ def analyze_stream():
             # 🟢 发送初始化消息
             yield f"data: {json.dumps({'type': 'init', 'total': num_symbols})}\n\n"
             
-            # ✨ NEW: 检查是否需要跳过 OI 获取
+            # ✨ NEW: 检查是否需要跳过盘后数据获取
             skip_oi = should_skip_oi_fetch()
+            skip_iv = skip_oi
             
-            # 初始化 OI 数据
+            # 初始化 IV / OI 数据
+            iv_data = {}
             oi_data = {}
             
+            if skip_iv:
+                print(f"\n⏰ 当前时间早于 18:00 CST，跳过 IV 数据获取")
+            else:
+                iv_estimated_time = estimate_iv_fetch_time(num_symbols)
+                print(f"\n{'='*60}")
+                print("📊 IV 数据获取配置:")
+                print(f"   - 标的数量: {num_symbols}")
+                print(f"   - 预计耗时: {iv_estimated_time:.1f}s")
+                print(f"{'='*60}\n")
+                iv_data = fetch_iv_terms(symbols)
+
             if skip_oi:
                 # ✨ 跳过 OI 获取
                 info_msg = {'type': 'info', 'message': '当前时间早于 18:00 CST，跳过 OI 数据获取', 'workers': 0, 'estimated_time': 0}
@@ -519,6 +558,18 @@ def analyze_stream():
                 try:
                     symbol = record.get('symbol', '')
                     
+                    # 注入 IV 数据（如果有）
+                    iv_result = iv_data.get(symbol)
+                    if iv_result:
+                        if iv_result.iv7 is not None:
+                            record['IV7'] = iv_result.iv7
+                        if iv_result.iv30 is not None:
+                            record['IV30'] = iv_result.iv30
+                        if iv_result.iv60 is not None:
+                            record['IV60'] = iv_result.iv60
+                        if iv_result.iv90 is not None:
+                            record['IV90'] = iv_result.iv90
+
                     # 注入 OI 数据（如果有）
                     if not skip_oi and symbol in oi_data:
                         current_oi, delta_oi = oi_data[symbol]

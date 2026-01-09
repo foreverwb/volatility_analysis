@@ -174,6 +174,52 @@ def compute_active_open_ratio(rec: Dict[str, Any]) -> float:
     return safe_div(delta_oi, volume, 0.0)
 
 
+def compute_term_structure_ratios(rec: Dict[str, Any]) -> Dict[str, float]:
+    """
+    计算期限结构比率
+    """
+    iv7 = rec.get("IV7")
+    iv30 = rec.get("IV30")
+    iv60 = rec.get("IV60")
+    iv90 = rec.get("IV90")
+    ratios = {}
+    if isinstance(iv7, (int, float)) and isinstance(iv30, (int, float)) and iv30 > 0:
+        ratios["7_30"] = iv7 / iv30
+    if isinstance(iv30, (int, float)) and isinstance(iv60, (int, float)) and iv60 > 0:
+        ratios["30_60"] = iv30 / iv60
+    if isinstance(iv60, (int, float)) and isinstance(iv90, (int, float)) and iv90 > 0:
+        ratios["60_90"] = iv60 / iv90
+    if isinstance(iv30, (int, float)) and isinstance(iv90, (int, float)) and iv90 > 0:
+        ratios["30_90"] = iv30 / iv90
+    return ratios
+
+
+def compute_term_structure_adjustment(rec: Dict[str, Any], cfg: Dict[str, Any]) -> float:
+    """
+    期限结构对波动评分的修正
+    """
+    ratios = compute_term_structure_ratios(rec)
+    if not ratios:
+        return 0.0
+
+    short_weight = float(cfg.get("term_short_weight", 0.35))
+    mid_weight = float(cfg.get("term_mid_weight", 0.25))
+    long_weight = float(cfg.get("term_long_weight", 0.15))
+    cap = float(cfg.get("term_adjust_cap", 0.6))
+
+    adj = 0.0
+    if "7_30" in ratios:
+        adj -= short_weight * (ratios["7_30"] - 1.0)
+    if "30_60" in ratios:
+        adj -= mid_weight * (ratios["30_60"] - 1.0)
+    if "60_90" in ratios:
+        adj -= long_weight * (ratios["60_90"] - 1.0)
+    if "30_90" in ratios and "60_90" not in ratios:
+        adj -= long_weight * (ratios["30_90"] - 1.0)
+
+    return max(-cap, min(cap, adj))
+
+
 def compute_term_structure(rec: Dict[str, Any]) -> tuple:
     """
     计算期限结构 (Term Structure)
@@ -185,18 +231,25 @@ def compute_term_structure(rec: Dict[str, Any]) -> tuple:
     Returns:
         (ratio_value, ratio_string): 数值和描述字符串
     """
-    iv30 = rec.get("IV30")
-    iv90 = rec.get("IV90")
-    
-    if isinstance(iv30, (int, float)) and isinstance(iv90, (int, float)) and iv90 > 0:
-        ratio = iv30 / iv90
-        ratio_str = f"{ratio:.2f}"
-        if ratio > 1.1:
-            ratio_str += " (倒挂/恐慌)"
-        elif ratio < 0.9:
-            ratio_str += " (陡峭/正常)"
-        return (ratio, ratio_str)
-    return (None, "N/A")
+    ratios = compute_term_structure_ratios(rec)
+    ratio = ratios.get("30_90")
+    if ratio is None:
+        return (None, "N/A")
+
+    ratio_str = f"{ratio:.2f}"
+    if ratio > 1.1:
+        ratio_str += " (倒挂/恐慌)"
+    elif ratio < 0.9:
+        ratio_str += " (陡峭/正常)"
+
+    parts = [ratio_str]
+    if "7_30" in ratios:
+        parts.append(f"7/30 {ratios['7_30']:.2f}")
+    if "30_60" in ratios:
+        parts.append(f"30/60 {ratios['30_60']:.2f}")
+    if "60_90" in ratios:
+        parts.append(f"60/90 {ratios['60_90']:.2f}")
+    return (ratio, " | ".join(parts))
 
 
 def parse_earnings_date(s: Optional[str]) -> Optional[date]:
