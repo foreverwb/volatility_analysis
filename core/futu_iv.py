@@ -4,7 +4,7 @@ Futu OpenAPI IV 期限结构计算
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 import os
 import time
 
@@ -108,12 +108,11 @@ def _fetch_symbol_iv_terms(
         window_end = min(window_start + timedelta(days=window_days), end_date)
         chain_limiter.acquire()
 
-        ret, data = quote_ctx.get_option_chain(
-            code,
-            begin_time=window_start.strftime("%Y-%m-%d"),
-            end_time=window_end.strftime("%Y-%m-%d"),
-            option_type=OptionType.CALL,
-            data_filter=OptionDataFilter(delta_min=0.45, delta_max=0.55)
+        ret, data = _get_option_chain_window(
+            quote_ctx=quote_ctx,
+            code=code,
+            start_date=window_start.strftime("%Y-%m-%d"),
+            end_date=window_end.strftime("%Y-%m-%d")
         )
 
         if ret != RET_OK:
@@ -153,6 +152,36 @@ def _dataframe_to_records(data) -> List[Dict]:
     if isinstance(data, list):
         return data
     return []
+
+
+def _get_option_chain_window(
+    quote_ctx: OpenQuoteContext,
+    code: str,
+    start_date: str,
+    end_date: str
+) -> Tuple[int, Any]:
+    params = OptionDataFilter(delta_min=0.45, delta_max=0.55)
+    variants = [
+        {"begin_time": start_date, "end_time": end_date},
+        {"start_time": start_date, "end_time": end_date},
+        {"start_date": start_date, "end_date": end_date},
+        {"start": start_date, "end": end_date},
+        {}
+    ]
+    last_error = None
+    for variant in variants:
+        try:
+            ret, data = quote_ctx.get_option_chain(
+                code,
+                option_type=OptionType.CALL,
+                data_filter=params,
+                **variant
+            )
+            return ret, data
+        except TypeError as exc:
+            last_error = exc
+            continue
+    raise TypeError(f"get_option_chain 参数不兼容: {last_error}")
 
 
 def _get_expiry_date(record: Dict) -> Optional[str]:
