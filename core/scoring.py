@@ -10,6 +10,7 @@ from .metrics import (
     compute_volume_bias, compute_notional_bias, compute_callput_ratio,
     compute_ivrv, compute_iv_ratio, compute_regime_ratio,
     compute_spot_vol_correlation_score, compute_active_open_ratio,
+    compute_term_structure_adjustment,
     parse_earnings_date, days_until
 )
 
@@ -202,6 +203,9 @@ def compute_vol_score(
     buy_side = 0.8 * discount_term + ivchg_buy + cheap_boost + earn_boost + regime_term
     sell_side = sell_pressure + rich_pressure + ivchg_sell + fear_sell
     vol_score = float(buy_side - sell_side)
+
+    # 期限结构修正
+    vol_score += compute_term_structure_adjustment(rec, cfg)
     
     # v2.3.2: 多腿修正
     if isinstance(multi_leg, (int, float)) and isinstance(ivr, (int, float)):

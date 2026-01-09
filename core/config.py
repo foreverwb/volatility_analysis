@@ -28,6 +28,12 @@ DEFAULT_CFG = {
     # IV 变动阈值
     "iv_pop_up": 10.0,
     "iv_pop_down": -10.0,
+
+    # 期限结构调整权重
+    "term_short_weight": 0.35,
+    "term_mid_weight": 0.25,
+    "term_long_weight": 0.15,
+    "term_adjust_cap": 0.6,
     
     # Regime 阈值
     "regime_hot": 1.20,
