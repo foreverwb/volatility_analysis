@@ -52,7 +52,8 @@ def estimate_iv_fetch_time(symbol_count: int, windows_per_symbol: int = 4) -> fl
 def fetch_iv_terms(
     symbols: Iterable[str],
     max_days: int = 120,
-    window_days: int = 30
+    window_days: int = 30,
+    max_retries: int = 2
 ) -> Dict[str, IVTermResult]:
     """
     批量获取 IV7/IV30/IV60/IV90
@@ -66,29 +67,75 @@ def fetch_iv_terms(
     snapshot_limiter = RateLimiter(max_calls=60, period_seconds=30)
 
     results: Dict[str, IVTermResult] = {}
+    symbols_list = list(symbols)
+    total = len(symbols_list)
+    start_ts = time.time()
 
     try:
-        for symbol in symbols:
+        for idx, symbol in enumerate(symbols_list, start=1):
             try:
-                result = _fetch_symbol_iv_terms(
+                result = _fetch_symbol_iv_terms_with_retry(
                     symbol=symbol,
                     market=market,
                     quote_ctx=quote_ctx,
                     chain_limiter=chain_limiter,
                     snapshot_limiter=snapshot_limiter,
                     max_days=max_days,
-                    window_days=window_days
+                    window_days=window_days,
+                    max_retries=max_retries
                 )
                 results[symbol] = result
+                progress = f"[{idx}/{total}]"
+                print(
+                    f"✓ {progress} {symbol}: IV7={_fmt_iv(result.iv7)} "
+                    f"IV30={_fmt_iv(result.iv30)} IV60={_fmt_iv(result.iv60)} "
+                    f"IV90={_fmt_iv(result.iv90)}"
+                )
             except Exception as exc:
                 print(f"❌ {symbol}: IV 计算失败: {exc}")
                 results[symbol] = IVTermResult()
     finally:
         quote_ctx.close()
 
+    elapsed = time.time() - start_ts
+    success = sum(
+        1 for v in results.values()
+        if v.iv7 is not None or v.iv30 is not None or v.iv60 is not None or v.iv90 is not None
+    )
+    print(f"✓ {success}/{total} successful in {elapsed:.1f}s")
     return results
 
 
+def _fetch_symbol_iv_terms_with_retry(
+    symbol: str,
+    market: str,
+    quote_ctx: OpenQuoteContext,
+    chain_limiter: RateLimiter,
+    snapshot_limiter: RateLimiter,
+    max_days: int,
+    window_days: int,
+    max_retries: int
+) -> IVTermResult:
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            return _fetch_symbol_iv_terms(
+                symbol=symbol,
+                market=market,
+                quote_ctx=quote_ctx,
+                chain_limiter=chain_limiter,
+                snapshot_limiter=snapshot_limiter,
+                max_days=max_days,
+                window_days=window_days
+            )
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_retries:
+                sleep_seconds = min(30.0, 2 ** attempt)
+                time.sleep(sleep_seconds)
+            else:
+                raise
+    raise RuntimeError(f"{symbol}: IV fetch failed: {last_error}")
 def _fetch_symbol_iv_terms(
     symbol: str,
     market: str,
@@ -139,11 +186,6 @@ def _fetch_symbol_iv_terms(
     iv30 = _interpolate_iv(dte_points, 30)
     iv60 = _interpolate_iv(dte_points, 60)
     iv90 = _interpolate_iv(dte_points, 90)
-
-    print(
-        f"✓ {symbol}: IV7={_fmt_iv(iv7)} IV30={_fmt_iv(iv30)} "
-        f"IV60={_fmt_iv(iv60)} IV90={_fmt_iv(iv90)}"
-    )
 
     return IVTermResult(iv7=iv7, iv30=iv30, iv60=iv60, iv90=iv90)
 
