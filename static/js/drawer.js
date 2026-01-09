@@ -8,7 +8,9 @@
  */
 function formatTermStructure(rawValue) {
     if (!rawValue || rawValue === 'N/A') return 'N/A';
-    if (rawValue.includes('(')) return rawValue;
+    if (rawValue.includes('(')) {
+        return buildTermStructureDisplay(rawValue);
+    }
 
     var shortMatch = rawValue.match(/7\/30\s+([0-9.]+)/);
     var midMatch = rawValue.match(/30\/60\s+([0-9.]+)/);
@@ -21,7 +23,7 @@ function formatTermStructure(rawValue) {
     if (isNaN(short) || isNaN(mid) || isNaN(long)) return rawValue;
 
     var label = classifyTermStructure(short, mid, long);
-    return label + ' | ' + rawValue;
+    return buildTermStructureDisplay(label + ' | ' + rawValue);
 }
 
 function classifyTermStructure(short, mid, long) {
@@ -44,6 +46,18 @@ function classifyTermStructure(short, mid, long) {
         return '正常陡峭 (Normal steep)';
     }
     return '正常陡峭 (Normal steep)';
+}
+
+function buildTermStructureDisplay(rawValue) {
+    var parts = rawValue.split(' | ');
+    if (parts.length < 2) return rawValue;
+
+    var label = parts[0];
+    var baseRatio = parts[1];
+    var ratioParts = parts.slice(2).join(' | ');
+    var ivHint = ratioParts ? ' -> IV7、IV30、IV60、IV90' : '';
+
+    return label + '<br>' + baseRatio + '<br>' + ratioParts + ivHint;
 }
 
 function showDrawer(timestamp, symbol) {
