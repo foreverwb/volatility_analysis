@@ -630,6 +630,46 @@ async function handleEarningsToggle(checkbox) {
 
 // Gemini 展示“Gamma 挤压”状态和“价-波相关性”
 function showDrawer(timestamp, symbol) {
+    function formatTermStructure(rawValue) {
+        if (!rawValue || rawValue === 'N/A') return 'N/A';
+        if (rawValue.includes('(')) return rawValue;
+
+        var shortMatch = rawValue.match(/7\/30\s+([0-9.]+)/);
+        var midMatch = rawValue.match(/30\/60\s+([0-9.]+)/);
+        var longMatch = rawValue.match(/60\/90\s+([0-9.]+)/);
+        if (!shortMatch || !midMatch || !longMatch) return rawValue;
+
+        var short = parseFloat(shortMatch[1]);
+        var mid = parseFloat(midMatch[1]);
+        var long = parseFloat(longMatch[1]);
+        if (isNaN(short) || isNaN(mid) || isNaN(long)) return rawValue;
+
+        var label = classifyTermStructure(short, mid, long);
+        return label + ' | ' + rawValue;
+    }
+
+    function classifyTermStructure(short, mid, long) {
+        if (short > 1.05 && mid > 1.05 && long > 1.05) {
+            return '全面倒挂 (Full inversion)';
+        }
+        if (short > 1.05 && mid <= 1.0) {
+            return '短期倒挂 (Short-term inversion)';
+        }
+        if (mid > 1.05 && short <= 1.02 && long <= 1.0) {
+            return '中期突起 (Mid-term bulge)';
+        }
+        if (long > 1.05 && mid <= 1.0) {
+            return '远期过高 (Far-term elevated)';
+        }
+        if (short < 0.9 && mid >= 0.95) {
+            return '短期低位 (Short-term low)';
+        }
+        if (short < 1.0 && mid < 1.0 && long < 1.0) {
+            return '正常陡峭 (Normal steep)';
+        }
+        return '正常陡峭 (Normal steep)';
+    }
+
     var record = allRecords.find(function(r) {
         return r.timestamp === timestamp && r.symbol === symbol;
     });
@@ -649,7 +689,7 @@ function showDrawer(timestamp, symbol) {
     // 新增：高级指标数据 (假设后端提供了这些字段，若无则使用默认值)
     var spotVolCorr = record.spot_vol_corr_score || 0;
     var isSqueeze = record.is_squeeze || false;
-    var termStructure = record.term_structure_ratio || 'N/A';
+    var termStructure = formatTermStructure(record.term_structure_ratio || 'N/A');
     
     var dirScore = record.direction_score;
     var volScore = record.vol_score;
