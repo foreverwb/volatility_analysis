@@ -11,6 +11,8 @@ import os
 import re
 from typing import Optional, Dict, Any
 
+from bridge.builders import build_bridge_snapshot
+from core.cleaning import clean_record, normalize_dataset
 
 DATA_FILE = 'analysis_records.json'
 
@@ -423,113 +425,6 @@ def register_swing_api(app):
         })
         return res
     
-    @app.route('/api/swing/params/batch', methods=['POST'])
-    def get_swing_params_batch():
-        """
-        批量获取多个 symbol 的市场参数 (v2.3.3 VIX增强版)
-        
-        请求示例:
-            POST /api/swing/params/batch
-            {
-                "symbols": ["NVDA", "TSLA", "AAPL"],
-                "date": "2025-12-06",  // 可选
-                "vix": 18.5            // 可选覆盖
-            }
-            
-        响应示例:
-            {
-                "success": true,
-                "date": "2025-12-06",
-                "results": {
-                    "NVDA": {
-                        "vix": 18.5,
-                        "params": {
-                            "ivr": 63,
-                            "iv30": 47.2,
-                            "hv20": 40,
-                            "earning_date": "2025-11-19",
-                            "iv_path": "Rising"
-                        }
-                    },
-                    "TSLA": {
-                        "vix": 18.5,
-                        "params": {
-                            "ivr": 35,
-                            "iv30": 55.7,
-                            "hv20": 48.3,
-                            "earning_date": null,
-                            "iv_path": "Falling"
-                        }
-                    }
-                },
-                "errors": {
-                    "AAPL": "Symbol not found"
-                }
-            }
-        """
-        data = request.json or {}
-        symbols = data.get('symbols', [])
-        vix_override = data.get('vix')  # 🟢 支持批量覆盖 VIX
-        target_date = data.get('date')
-        
-        if not symbols:
-            return jsonify({
-                'success': False,
-                'error': 'No symbols provided'
-            }), 400
-        
-        # 验证日期格式
-        if target_date:
-            if not re.match(r'^\d{4}-\d{2}-\d{2}$', target_date):
-                return jsonify({
-                    'success': False,
-                    'error': f'Invalid date format: {target_date}. Expected YYYY-MM-DD'
-                }), 400
-        
-        results = {}
-        errors = {}
-        
-        for symbol in symbols:
-            symbol = symbol.upper()
-            record = get_latest_record_for_symbol(symbol, target_date)
-            
-            if not record:
-                error_msg = 'Symbol not found'
-                if target_date:
-                    error_msg += f' for date {target_date}'
-                errors[symbol] = error_msg
-                continue
-            
-            params = extract_swing_params(record)
-            
-            # 🟢 应用 VIX 覆盖
-            if vix_override is not None:
-                params['vix'] = vix_override
-            
-            # 检查必要参数
-            if any(params.get(k) is None for k in ['vix', 'ivr', 'iv30', 'hv20']):
-                errors[symbol] = 'Missing required fields'
-                continue
-            
-            # 🟢 每个 symbol 的数据结构: vix 独立字段
-            results[symbol] = {
-                'vix': params['vix'],  # 🟢 与 symbol 同级
-                'params': {
-                    'ivr': params['ivr'],
-                    'iv30': params['iv30'],
-                    'hv20': params['hv20'],
-                    'earning_date': params['earning_date'],
-                    'iv_path': params.get('iv_path', 'Insufficient_Data')  # 🔧 使用 get 方法
-                }
-            }
-        
-        return jsonify({
-            'success': True,
-            'date': target_date,
-            'results': results,
-            'errors': errors if errors else None
-        })
-    
     @app.route('/api/swing/symbols', methods=['GET'])
     def list_available_symbols():
         """
@@ -583,4 +478,76 @@ def register_swing_api(app):
             'symbol': symbol,
             'dates': symbol_dates,
             'count': len(symbol_dates)
+        })
+
+
+def register_bridge_api(app, cfg=None):
+    """
+    注册 Bridge 层 API，返回 micro 消费的 bridge snapshot。
+    """
+    cfg_ref = cfg or {}
+
+    @app.route('/api/bridge/params/<symbol>', methods=['GET'])
+    def get_bridge_params(symbol: str):
+        symbol = symbol.upper()
+        target_date = request.args.get('date')
+
+        if target_date and not re.match(r'^\d{4}-\d{2}-\d{2}$', target_date):
+            return jsonify({
+                'success': False,
+                'error': f'Invalid date format: {target_date}. Expected YYYY-MM-DD'
+            }), 400
+
+        record = get_latest_record_for_symbol(symbol, target_date)
+        resolved_date = target_date
+        fallback_used = False
+
+        if not record and target_date:
+            # 指定日期未找到，回退到最新记录
+            record = get_latest_record_for_symbol(symbol, None)
+            fallback_used = record is not None
+            resolved_date = record.get('timestamp', '')[:10] if record else None
+
+        if not record:
+            all_records = load_records()
+            symbol_dates = sorted(set(
+                r.get('timestamp', '')[:10]
+                for r in all_records
+                if r.get('symbol', '').upper() == symbol
+            ), reverse=True)
+            return jsonify({
+                'success': False,
+                'error': f'Symbol {symbol} not found',
+                'available_dates': symbol_dates if symbol_dates else None,
+            }), 404
+
+        bridge_data = record.get('bridge')
+        if not bridge_data:
+            bridge_source = {}
+            raw = record.get('raw_data') or {}
+            try:
+                cleaned = clean_record(raw)
+                normalized = normalize_dataset([cleaned])[0]
+                bridge_source.update(normalized)
+            except Exception as e:
+                print(f"⚠️ Bridge rebuild fallback without normalization: {e}")
+                bridge_source.update(raw)
+
+            bridge_source.update(record)
+
+            try:
+                bridge_data = build_bridge_snapshot(bridge_source, cfg_ref).to_dict()
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': f'Failed to build bridge snapshot: {e}'
+                }), 500
+
+        return jsonify({
+            'success': True,
+            'symbol': symbol,
+            'date': resolved_date or record.get('timestamp', '')[:10],
+            'bridge': bridge_data,
+            'requested_date': target_date,
+            'fallback_used': fallback_used
         })

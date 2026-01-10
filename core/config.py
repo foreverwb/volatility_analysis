@@ -2,6 +2,10 @@
 配置常量和默认阈值 - v2.3.2 增强版
 新增可配置的修正系数
 """
+import os
+from typing import Any, Dict, List
+
+import yaml
 
 # 全局默认阈值配置
 DEFAULT_CFG = {
@@ -88,6 +92,44 @@ DEFAULT_CFG = {
 
 # 指数类标的
 INDEX_TICKERS = ["SPY", "QQQ", "IWM", "DIA"]
+
+
+def _load_bridge_term_structure_rules() -> Dict[str, Any]:
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    package_dir = os.path.abspath(os.path.dirname(__file__))
+    env_path = os.environ.get("BRIDGE_TERM_RULES_PATH")
+
+    candidates: List[str] = [
+        os.path.join(repo_root, "config", "bridge_term_structure_rules.yaml"),
+        os.path.join(package_dir, "config", "bridge_term_structure_rules.yaml"),
+    ]
+    if env_path:
+        candidates.append(os.path.abspath(env_path))
+
+    attempted = []
+    for path in candidates:
+        attempted.append(path)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+                if data:
+                    return data
+        except Exception as e:
+            print(f"⚠ Warning: Failed to load bridge_term_structure_rules.yaml from {path}: {e}")
+            continue
+
+    print(f"⚠ Warning: bridge_term_structure_rules.yaml not found. Tried: {attempted}")
+    return {}
+
+
+# 桥接层配置
+BRIDGE_TERM_STRUCTURE_RULES = _load_bridge_term_structure_rules()
+DEFAULT_CFG["bridge_term_structure_rules"] = BRIDGE_TERM_STRUCTURE_RULES
+DEFAULT_CFG["bridge_term_structure_horizon_bias"] = BRIDGE_TERM_STRUCTURE_RULES.get(
+    "horizon_bias_defaults", {}
+)
 
 
 def get_dynamic_thresholds(symbol: str, base_cfg: dict) -> dict:

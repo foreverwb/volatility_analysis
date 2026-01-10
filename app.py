@@ -6,13 +6,13 @@ Flask 主应用入口
 1. 移除循环导入问题
 2. 修正历史评分获取函数的位置
 3. 确保所有依赖正确导入
-4. ✨ NEW: 添加18:00时间限制逻辑
+4. 去除 18:00 时间限制，默认获取 OI 数据
 """
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response, stream_with_context
 import json
 import os
 from typing import List, Dict, Any
-from datetime import datetime, timedelta, time
+from datetime import datetime
 from collections import defaultdict
 from core.market_data import get_vix_info, clear_vix_cache
 
@@ -27,28 +27,13 @@ app = Flask(__name__)
 DATA_FILE = 'analysis_records.json'
 
 # =========================
-# ✨ NEW: 时间判断工具函数
+# 时间判断工具函数（已禁用时间限制）
 # =========================
 def should_skip_oi_fetch() -> bool:
     """
-    判断当前时间是否应跳过 OI 数据获取
-    
-    规则: 北京时间 18:00 之前跳过
-    
-    Returns:
-        True if 当前时间 < 18:00 CST
+    始终返回 False，表示不跳过 OI 数据获取。
     """
-    import pytz
-    
-    # 获取北京时间
-    beijing_tz = pytz.timezone('Asia/Shanghai')
-    now_beijing = datetime.now(beijing_tz)
-    
-    # 18:00 时间点
-    cutoff_time = time(18, 0, 0)
-    
-    # 比较当前时间
-    return now_beijing.time() < cutoff_time
+    return False
 
 
 # =========================
@@ -626,16 +611,13 @@ def clear_vix_cache_endpoint():
         return jsonify({'error': str(e)}), 500
 
 # 注册 swing 项目的 API 扩展
-from api_extension import register_swing_api
+from api_extension import register_bridge_api, register_swing_api
 register_swing_api(app)
+register_bridge_api(app, DEFAULT_CFG)
 
 
 if __name__ == '__main__':
-    print("\n📡 Swing API 端点已启用:")
-    print("   GET  /api/swing/params/<symbol>?vix=XX")
-    print("   POST /api/swing/params/batch")
-    print("   GET  /api/swing/symbols")
-    print("\n⏰ 时间限制: 18:00 CST 之前跳过 OI 数据获取")
+    print(">>>>>>>>> σ² <<<<<<<<<<<<<")
     
     try:
         app.run(debug=True, host='0.0.0.0', port=8668)

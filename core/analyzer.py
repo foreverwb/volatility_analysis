@@ -21,6 +21,7 @@ from .strategy import map_direction_pref, map_vol_pref, combine_quadrant, get_st
 from .market_data import get_vix_with_fallback
 from .rolling_cache import get_global_cache, update_cache_with_record
 from .dynamic_params import compute_all_dynamic_params, validate_dynamic_params
+from bridge.builders import build_bridge_snapshot
 
 
 def calculate_analysis(
@@ -253,6 +254,33 @@ def calculate_analysis(
         'risk': strategy_info['风险'],
         'raw_data': data
     }
+
+    # ============ Bridge Snapshot (供 micro 层消费) ============
+    bridge_payload = dict(normed)
+    bridge_payload.update({
+        'symbol': symbol,
+        'timestamp': result['timestamp'],
+        'vix': vix_value,
+        'IVR': normed.get('IVR'),
+        'iv30': result.get('iv30'),
+        'hv20': result.get('hv20'),
+        'hv1y': normed.get('HV1Y'),
+        'quadrant': quadrant,
+        'direction_score': result.get('direction_score'),
+        'vol_score': result.get('vol_score'),
+        'direction_bias': dir_pref,
+        'vol_bias': vol_pref,
+        'confidence': confidence,
+        'liquidity': liquidity,
+        'active_open_ratio': active_open_ratio,
+        'oi_data_available': result.get('oi_data_available'),
+        'flow_bias': notional_bias,
+        'is_squeeze': is_squeeze,
+        'is_index': symbol in INDEX_TICKERS,
+        'days_to_earnings': days_to_earnings,
+        'penalized_extreme_move_low_vol': penal_flag,
+    })
+    result['bridge'] = build_bridge_snapshot(bridge_payload, effective_cfg).to_dict()
     
     # ============ 更新缓存 ============
     if effective_cfg.get("enable_dynamic_params", True) and dynamic_params and vix_value:
