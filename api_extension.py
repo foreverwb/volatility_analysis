@@ -491,7 +491,8 @@ def register_bridge_api(app, cfg=None):
     def get_bridge_params(symbol: str):
         symbol = symbol.upper()
         target_date = request.args.get('date')
-
+        target_source = request.args.get('source')
+        
         if target_date and not re.match(r'^\d{4}-\d{2}-\d{2}$', target_date):
             return jsonify({
                 'success': False,
@@ -543,11 +544,24 @@ def register_bridge_api(app, cfg=None):
                     'error': f'Failed to build bridge snapshot: {e}'
                 }), 500
 
-        return jsonify({
+        # 补充便捷字段 (与 micro 层预期一致)
+        market_state = bridge_data.get('market_state', {}) if isinstance(bridge_data, dict) else {}
+        event_state = bridge_data.get('event_state', {}) if isinstance(bridge_data, dict) else {}
+        bridge_data.setdefault('ivr', market_state.get('ivr'))
+        bridge_data.setdefault('iv30', market_state.get('iv30'))
+        bridge_data.setdefault('hv20', market_state.get('hv20'))
+        bridge_data.setdefault('earning_date', event_state.get('earnings_date'))
+
+        response_payload = {
             'success': True,
             'symbol': symbol,
             'date': resolved_date or record.get('timestamp', '')[:10],
             'bridge': bridge_data,
             'requested_date': target_date,
             'fallback_used': fallback_used
-        })
+        }
+        try:
+            print(f"{target_source}--{symbol} >> Bridge Response <<]" + json.dumps(response_payload, ensure_ascii=False, indent=2))
+        except Exception as e:
+            print(f"[BridgeAPI] Failed to print response: {e}")
+        return jsonify(response_payload)
