@@ -6,15 +6,14 @@ API 扩展模块 - v2.3.3 VIX增强版
 from flask import jsonify, request
 from datetime import datetime
 from collections import defaultdict
-import json
-import os
 import re
 from typing import Optional, Dict, Any
 
 from bridge.builders import build_bridge_snapshot
 from core.cleaning import clean_record, normalize_dataset
+from storage.sqlite_repo import get_records_repo
 
-DATA_FILE = 'analysis_records.json'
+records_repo = get_records_repo()
 
 
 def parse_earnings_date_to_iso(earnings_str: Optional[str]) -> Optional[str]:
@@ -43,22 +42,6 @@ def parse_earnings_date_to_iso(earnings_str: Optional[str]) -> Optional[str]:
     return None
 
 
-def load_records() -> list:
-    """加载分析记录"""
-    if not os.path.exists(DATA_FILE):
-        return []
-    try:
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            content = f.read().strip()
-            if not content:
-                return []
-            data = json.loads(content)
-            return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, Exception) as e:
-        print(f"警告: 读取 {DATA_FILE} 失败: {e}")
-        return []
-
-
 def get_historical_iv30(symbol: str, target_date: str = None, days: int = 3) -> list:
     """
     获取指定 symbol 最近 N 个交易日的 IV30 值
@@ -71,7 +54,7 @@ def get_historical_iv30(symbol: str, target_date: str = None, days: int = 3) -> 
     Returns:
         按时间升序的 IV30 列表 [T-2, T-1, T]，不足时返回 []
     """
-    records = load_records()
+    records = records_repo.list_records_by_symbol(symbol)
     symbol_upper = symbol.upper()
     
     print(f"\n🔍 get_historical_iv30: {symbol}, target={target_date}, days={days}")
@@ -224,7 +207,7 @@ def get_latest_record_for_symbol(symbol: str, target_date: str = None) -> Option
     Returns:
         分析记录，如果不存在返回 None
     """
-    records = load_records()
+    records = records_repo.list_records_by_symbol(symbol)
     symbol_upper = symbol.upper()
     
     # 筛选该 symbol 的所有记录
@@ -437,7 +420,7 @@ def register_swing_api(app):
                 "latest_date": "2025-12-06"
             }
         """
-        records = load_records()
+        records = records_repo.list_records()
         
         # 获取所有唯一的 symbol
         symbols = sorted(set(r.get('symbol', '').upper() for r in records if r.get('symbol')))
@@ -465,7 +448,7 @@ def register_swing_api(app):
             }
         """
         symbol = symbol.upper()
-        records = load_records()
+        records = records_repo.list_records()
         
         # 获取该 symbol 的所有日期
         symbol_dates = sorted(set(

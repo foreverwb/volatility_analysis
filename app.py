@@ -10,11 +10,11 @@ Flask 主应用入口
 """
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response, stream_with_context
 import json
-import os
 from typing import List, Dict, Any
 from datetime import datetime
 from collections import defaultdict
 from core.market_data import get_vix_info, clear_vix_cache
+from storage.sqlite_repo import get_records_repo
 
 from core import (
     DEFAULT_CFG,
@@ -23,8 +23,7 @@ from core import (
 from core.futu_iv import fetch_iv_terms, estimate_iv_fetch_time
 from core.futu_oi import batch_compute_delta_oi
 app = Flask(__name__)
-
-DATA_FILE = 'analysis_records.json'
+records_repo = get_records_repo()
 
 # =========================
 # 时间判断工具函数（已禁用时间限制）
@@ -34,31 +33,6 @@ def should_skip_oi_fetch() -> bool:
     始终返回 False，表示不跳过 OI 数据获取。
     """
     return False
-
-
-# =========================
-# 数据持久化
-# =========================
-def load_data() -> List[Dict[str, Any]]:
-    """加载分析记录"""
-    if not os.path.exists(DATA_FILE):
-        return []
-    try:
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            content = f.read().strip()
-            if not content:
-                return []
-            data = json.loads(content)
-            return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, Exception) as e:
-        print(f"警告: 读取 {DATA_FILE} 失败: {e}")
-        return []
-
-
-def save_data(data: List[Dict[str, Any]]):
-    """保存分析记录"""
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def get_history_scores(symbol: str, n_days: int = 5, as_of_date: str = None) -> List[float]:
@@ -78,7 +52,7 @@ def get_history_scores(symbol: str, n_days: int = 5, as_of_date: str = None) -> 
     Returns:
         历史评分列表（按时间倒序，最新在前）
     """
-    records = load_data()
+    records = records_repo.list_records_by_symbol(symbol)
     symbol_upper = symbol.upper()
     
     # 1. 筛选该 symbol 的所有记录
@@ -246,24 +220,7 @@ def analyze():
         
         # 保存数据
         if results:
-            all_data = load_data()
-            new_records_map = {}
-            for r in results:
-                date = r['timestamp'].split(' ')[0]
-                symbol = r['symbol']
-                key = (date, symbol)
-                new_records_map[key] = r
-            
-            filtered_old_data = []
-            for old_record in all_data:
-                date = old_record.get('timestamp', '').split(' ')[0]
-                symbol = old_record.get('symbol', '')
-                key = (date, symbol)
-                if key not in new_records_map:
-                    filtered_old_data.append(old_record)
-            
-            all_data = filtered_old_data + results
-            save_data(all_data)
+            records_repo.upsert_daily_latest(results)
         
         message = f'成功分析 {len(results)} 个标的'
         if errors:
@@ -296,26 +253,15 @@ def analyze():
 def get_records():
     """获取分析记录"""
     try:
-        data = load_data()
-        if not isinstance(data, list):
-            return jsonify([])
-        
         date_filter = request.args.get('date')
         quadrant_filter = request.args.get('quadrant')
         confidence_filter = request.args.get('confidence')
-        
-        filtered_data = data
-        
-        if date_filter:
-            filtered_data = [d for d in filtered_data if d.get('timestamp', '').startswith(date_filter)]
-        
-        if quadrant_filter and quadrant_filter != 'all':
-            filtered_data = [d for d in filtered_data if d.get('quadrant') == quadrant_filter]
-        
-        if confidence_filter and confidence_filter != 'all':
-            filtered_data = [d for d in filtered_data if d.get('confidence') == confidence_filter]
-        
-        return jsonify(filtered_data)
+        data = records_repo.list_records(
+            date=date_filter,
+            quadrant=quadrant_filter if quadrant_filter != 'all' else None,
+            confidence=confidence_filter if confidence_filter != 'all' else None
+        )
+        return jsonify(data)
     
     except Exception as e:
         return jsonify([])
@@ -325,12 +271,9 @@ def get_records():
 def delete_record(timestamp, symbol):
     """删除单条记录"""
     try:
-        data = load_data()
-        original_length = len(data)
-        data = [d for d in data if not (d['timestamp'] == timestamp and d['symbol'] == symbol)]
-        if len(data) == original_length:
+        deleted = records_repo.delete_record(timestamp, symbol)
+        if not deleted:
             return jsonify({'error': '未找到该记录'}), 404
-        save_data(data)
         return jsonify({'message': '删除成功'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -340,13 +283,9 @@ def delete_record(timestamp, symbol):
 def delete_records_by_date(date):
     """按日期删除记录"""
     try:
-        data = load_data()
-        original_length = len(data)
-        data = [d for d in data if not d.get('timestamp', '').startswith(date)]
-        deleted_count = original_length - len(data)
+        deleted_count = records_repo.delete_by_date(date)
         if deleted_count == 0:
             return jsonify({'error': '未找到该日期的记录'}), 404
-        save_data(data)
         return jsonify({'message': f'成功删除 {deleted_count} 条记录'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -356,7 +295,7 @@ def delete_records_by_date(date):
 def delete_all_records():
     """删除所有记录"""
     try:
-        save_data([])
+        records_repo.delete_all()
         return jsonify({'message': '所有数据已删除'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -366,8 +305,7 @@ def delete_all_records():
 def get_dates():
     """获取所有日期"""
     try:
-        data = load_data()
-        dates = sorted(set(d.get('timestamp', '')[:10] for d in data if d.get('timestamp')), reverse=True)
+        dates = records_repo.list_dates()
         return jsonify(dates)
     except Exception as e:
         return jsonify([]), 200
@@ -511,24 +449,7 @@ def analyze_stream():
             
             # 保存数据
             if results:
-                all_data = load_data()
-                new_records_map = {}
-                for r in results:
-                    date = r['timestamp'].split(' ')[0]
-                    symbol = r['symbol']
-                    key = (date, symbol)
-                    new_records_map[key] = r
-                
-                filtered_old_data = []
-                for old_record in all_data:
-                    date = old_record.get('timestamp', '').split(' ')[0]
-                    symbol = old_record.get('symbol', '')
-                    key = (date, symbol)
-                    if key not in new_records_map:
-                        filtered_old_data.append(old_record)
-                
-                all_data = filtered_old_data + results
-                save_data(all_data)
+                records_repo.upsert_daily_latest(results)
             
             # 🟢 发送完成消息
             message = f'成功分析 {len(results)} 个标的'
