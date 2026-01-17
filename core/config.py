@@ -88,6 +88,24 @@ DEFAULT_CFG = {
     "multileg_conf_thresh": 40.0,
     "singleleg_conf_thresh": 70.0,
     "contingent_conf_thresh": 10.0,
+    
+    # ========== 数据质量校验 ==========
+    "data_quality_volume_tolerance": 0.15,
+    "data_quality_putpct_tolerance": 0.12,
+    "data_quality_missing_warn": 2,
+    "data_quality_missing_fail": 4,
+    "data_quality_volume_ceiling": 50_000_000,
+    "data_quality_notional_ceiling": 5_000_000_000,
+    "data_quality_iv_ceiling": 300,
+    
+    # ========== 姿态/模板 Overlay ==========
+    "posture_consistency_strong_threshold": 0.6,
+    "posture_consistency_weak_threshold": 0.2,
+    "posture_direction_strong_threshold": 1.0,
+    "posture_direction_med_threshold": 0.6,
+    "watch_direction_trigger": 0.8,
+    "watch_vol_trigger": 0.3,
+    "fear_vix_high": 25.0,
 }
 
 # 指数类标的
@@ -120,7 +138,6 @@ def _load_bridge_term_structure_rules() -> Dict[str, Any]:
             print(f"⚠ Warning: Failed to load bridge_term_structure_rules.yaml from {path}: {e}")
             continue
 
-    print(f"⚠ Warning: bridge_term_structure_rules.yaml not found. Tried: {attempted}")
     return {}
 
 

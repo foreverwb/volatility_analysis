@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from .config import DEFAULT_CFG, INDEX_TICKERS, get_dynamic_thresholds
 from .cleaning import clean_record, normalize_dataset
+from .validation import validate_record
 from .metrics import (
     compute_volume_bias, compute_notional_bias, compute_callput_ratio,
     compute_ivrv, compute_iv_ratio, compute_regime_ratio,
@@ -17,11 +18,14 @@ from .metrics import (
 from .scoring import compute_direction_score, compute_vol_score
 from .confidence import map_liquidity, map_confidence, penalize_extreme_move_low_vol
 from .strategy import map_direction_pref, map_vol_pref, combine_quadrant, get_strategy_info
+from .posture import compute_posture_5d
+from .guards import detect_fear_regime, evaluate_trade_permission, build_watchlist_guidance
 
 from .market_data import get_vix_with_fallback
 from .rolling_cache import get_global_cache, update_cache_with_record
 from .dynamic_params import compute_all_dynamic_params, validate_dynamic_params
 from bridge.builders import build_bridge_snapshot
+from bridge.micro_templates import select_micro_template
 
 
 def calculate_analysis(
@@ -58,6 +62,10 @@ def calculate_analysis(
     
     effective_cfg = get_dynamic_thresholds(symbol, cfg)
     
+    validation = validate_record(normed, effective_cfg)
+    data_quality = validation["data_quality"]
+    data_quality_issues = validation["data_quality_issues"]
+    
     # ============ 🟢 强制获取 VIX (不受动态参数开关影响) ============
     vix_value = get_vix_with_fallback(
         default=effective_cfg.get("vix_fallback_value", 18.0)
@@ -91,6 +99,7 @@ def calculate_analysis(
     is_squeeze = detect_squeeze_potential(normed, effective_cfg)
     term_structure_val, term_structure_str = compute_term_structure(normed)
     term_ratios = compute_term_structure_ratios(normed)
+    fear_flag, fear_reasons = detect_fear_regime(normed, term_structure_str, vix_value, effective_cfg)
     
     # ✨ NEW: 条件计算 ActiveOpenRatio
     if skip_oi:
@@ -124,6 +133,13 @@ def calculate_analysis(
     confidence, structure_factor, consistency = map_confidence(
         dir_score, vol_score, liquidity, normed, effective_cfg, history_scores
     )
+    confidence_notes = []
+    if data_quality == "LOW" and confidence != "低":
+        confidence_notes.append("数据质量LOW→置信度降级")
+        confidence = "低"
+    elif data_quality == "MED" and confidence == "高":
+        confidence_notes.append("数据质量MED→置信度降级为中")
+        confidence = "中"
     penal_flag = penalize_extreme_move_low_vol(normed, effective_cfg)
     
     # ============ 策略建议 ============
@@ -141,6 +157,7 @@ def calculate_analysis(
     notional_bias = compute_notional_bias(normed)
     cp_ratio = compute_callput_ratio(normed)
     days_to_earnings = days_until(parse_earnings_date(normed.get("Earnings")))
+    posture_info = compute_posture_5d(dir_score, history_scores, effective_cfg)
     
     # ============ 驱动因素 ============
     direction_factors = []
@@ -186,14 +203,79 @@ def calculate_analysis(
     if term_structure_str and term_structure_str != "N/A":
         vol_factors.append(f"期限结构: {term_structure_str}")
     
+    permission_info = evaluate_trade_permission(
+        quadrant=quadrant,
+        vol_pref=vol_pref,
+        confidence=confidence,
+        days_to_earnings=days_to_earnings,
+        data_quality=data_quality,
+        fear_reasons=fear_reasons,
+        cfg=effective_cfg
+    )
+    # 姿态层风险覆盖
+    posture_overlay_notes = []
+    severity_map = {"NORMAL": 0, "ALLOW_DEFINED_RISK_ONLY": 1, "NO_TRADE": 2}
+    posture_perm = permission_info["trade_permission"]
+    perm_reasons = list(permission_info["permission_reasons"])
+    disabled_structures = set(permission_info["disabled_structures"])
+    posture_tag = posture_info.get("posture_5d")
+    
+    def elevate(target: str, code: str, add_disabled: bool = False):
+        nonlocal posture_perm
+        if severity_map.get(target, 0) > severity_map.get(posture_perm, 0):
+            posture_perm = target
+        perm_reasons.append(code)
+        if add_disabled:
+            disabled_structures.update(["naked_short_put", "naked_short_call", "short_strangle", "short_call_ratio", "short_put_ratio"])
+    
+    if posture_tag == "COUNTERTREND":
+        elevate("ALLOW_DEFINED_RISK_ONLY", "POSTURE_COUNTERTREND")
+        posture_overlay_notes.append("逆势反转：降级为定义风险")
+    elif posture_tag == "ONE_DAY_SHOCK":
+        elevate("ALLOW_DEFINED_RISK_ONLY", "POSTURE_ONE_DAY_SHOCK")
+        disabled_structures.update(["naked_short_put", "naked_short_call", "short_strangle"])
+        posture_overlay_notes.append("单日冲击：避免裸露尾部")
+    elif posture_tag == "CHOP":
+        elevate("NO_TRADE", "POSTURE_CHOP", add_disabled=True)
+        posture_overlay_notes.append("震荡/摇摆：倾向观望")
+    
+    permission_info["trade_permission"] = posture_perm
+    permission_info["permission_reasons"] = perm_reasons
+    permission_info["disabled_structures"] = list(disabled_structures)
+    
+    watch_guidance = build_watchlist_guidance(
+        quadrant=quadrant,
+        dir_score=dir_score,
+        vol_score=vol_score,
+        active_open_ratio=active_open_ratio,
+        structure_factor=structure_factor,
+        term_structure_label=term_structure_str,
+        cfg=effective_cfg
+    )
+    
     # ============ 🟢 构建返回结果 (VIX 提升到顶层) ============
     result = {
         'symbol': symbol,
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'quadrant': quadrant,
         'confidence': confidence,
+        'confidence_notes': confidence_notes,
         'liquidity': liquidity,
+        'data_quality': data_quality,
+        'data_quality_issues': data_quality_issues,
         'penalized_extreme_move_low_vol': penal_flag,
+        'fear_regime': fear_flag,
+        'trade_permission': permission_info["trade_permission"],
+        'permission_reasons': permission_info["permission_reasons"],
+        'disabled_structures': permission_info["disabled_structures"],
+        'watch_triggers': watch_guidance.get("watch_triggers", []),
+        'what_to_monitor': watch_guidance.get("what_to_monitor", []),
+        'posture_5d': posture_info.get("posture_5d"),
+        'posture_reasons': posture_info.get("posture_reasons"),
+        'posture_reason_codes': posture_info.get("posture_reason_codes"),
+        'posture_confidence': posture_info.get("posture_confidence"),
+        'posture_inputs_snapshot': posture_info.get("posture_inputs_snapshot"),
+        'posture_overlay_notes': posture_overlay_notes,
         
         # 🟢 VIX 提升到顶层 (与 IVR/IV30 等同级)
         'vix': round(vix_value, 2) if vix_value else None,
@@ -271,6 +353,12 @@ def calculate_analysis(
         'direction_bias': dir_pref,
         'vol_bias': vol_pref,
         'confidence': confidence,
+        'confidence_notes': confidence_notes,
+        'data_quality': data_quality,
+        'data_quality_issues': data_quality_issues,
+        'trade_permission': permission_info["trade_permission"],
+        'permission_reasons': permission_info["permission_reasons"],
+        'disabled_structures': permission_info["disabled_structures"],
         'liquidity': liquidity,
         'active_open_ratio': active_open_ratio,
         'oi_data_available': result.get('oi_data_available'),
@@ -279,8 +367,37 @@ def calculate_analysis(
         'is_index': symbol in INDEX_TICKERS,
         'days_to_earnings': days_to_earnings,
         'penalized_extreme_move_low_vol': penal_flag,
+        'fear_regime': fear_flag,
+        'fear_reasons': fear_reasons,
+        'watch_triggers': watch_guidance.get("watch_triggers", []),
+        'what_to_monitor': watch_guidance.get("what_to_monitor", []),
+        'posture_5d': posture_info.get("posture_5d"),
+        'posture_reasons': posture_info.get("posture_reasons"),
+        'posture_reason_codes': posture_info.get("posture_reason_codes"),
+        'posture_confidence': posture_info.get("posture_confidence"),
+        'posture_inputs_snapshot': posture_info.get("posture_inputs_snapshot"),
+        'posture_overlay_notes': posture_overlay_notes,
     })
-    result['bridge'] = build_bridge_snapshot(bridge_payload, effective_cfg).to_dict()
+    
+    micro_template = select_micro_template(bridge_payload, effective_cfg)
+    
+    # 同步权限到姿态 overlay 后
+    permission_info["trade_permission"] = micro_template["trade_permission"]
+    permission_info["permission_reasons"] = micro_template["permission_reasons"]
+    permission_info["disabled_structures"] = micro_template["disabled_structures"]
+    result['trade_permission'] = permission_info["trade_permission"]
+    result['permission_reasons'] = permission_info["permission_reasons"]
+    result['disabled_structures'] = permission_info["disabled_structures"]
+    bridge_payload.update({
+        'trade_permission': permission_info["trade_permission"],
+        'permission_reasons': permission_info["permission_reasons"],
+        'disabled_structures': permission_info["disabled_structures"],
+    })
+    
+    bridge_snapshot = build_bridge_snapshot(bridge_payload, effective_cfg).to_dict()
+    bridge_snapshot["micro_template"] = micro_template
+    result['bridge'] = bridge_snapshot
+    result['micro_template'] = micro_template
     
     # ============ 更新缓存 ============
     if effective_cfg.get("enable_dynamic_params", True) and dynamic_params and vix_value:
