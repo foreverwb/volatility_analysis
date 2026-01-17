@@ -4,6 +4,7 @@ Dynamic Parameter Adaptation Layer
 """
 from .config import DEFAULT_CFG, INDEX_TICKERS, get_dynamic_thresholds, validate_config
 from .cleaning import clean_record, normalize_dataset
+from .validation import validate_record
 from .metrics import (
     compute_volume_bias, compute_notional_bias, compute_callput_ratio,
     compute_ivrv, compute_iv_ratio, compute_regime_ratio,
@@ -19,6 +20,8 @@ from .confidence import (
 from .strategy import (
     map_direction_pref, map_vol_pref, combine_quadrant, get_strategy_info
 )
+from .posture import compute_posture_5d
+from .guards import detect_fear_regime, evaluate_trade_permission, build_watchlist_guidance
 from .analyzer import calculate_analysis
 
 # v2.3.3 新增模块
@@ -42,7 +45,7 @@ __all__ = [
     'DEFAULT_CFG', 'INDEX_TICKERS', 'get_dynamic_thresholds', 'validate_config',
     
     # 数据清洗
-    'clean_record', 'normalize_dataset',
+    'clean_record', 'normalize_dataset', 'validate_record',
     
     # 指标计算
     'compute_volume_bias', 'compute_notional_bias', 'compute_callput_ratio',
@@ -60,6 +63,7 @@ __all__ = [
     
     # 策略
     'map_direction_pref', 'map_vol_pref', 'combine_quadrant', 'get_strategy_info',
+    'compute_posture_5d', 'detect_fear_regime', 'evaluate_trade_permission', 'build_watchlist_guidance',
     
     # 分析器
     'calculate_analysis',

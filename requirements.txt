@@ -6,3 +6,4 @@ pytz==2024.1
 futu-api==9.6.5608
 PyYAML==6.0.1
 pytest==8.3.4
+requests==2.32.3

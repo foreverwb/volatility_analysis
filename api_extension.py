@@ -163,8 +163,8 @@ def compute_iv_path(symbol: str, target_date: str = None, threshold: float = 1.0
     iv_history = get_historical_iv30(symbol, target_date, days=3)
     
     if len(iv_history) < 3:
-        print(f"❌ {symbol}: Insufficient data (got {len(iv_history)} days, need 3)")
-        return "Insufficient_Data"
+        print(f"❌ {symbol}: Insufficient data (got {len(iv_history)} days, need 3) -> skip iv_path")
+        return None
     
     iv_t_minus_2, iv_t_minus_1, iv_t = iv_history
     print(f"  📈 IV30 history: T-2={iv_t_minus_2}, T-1={iv_t_minus_1}, T={iv_t}")

@@ -10,6 +10,7 @@ Flask 主应用入口
 """
 from flask import Flask, render_template, request, jsonify, send_from_directory, Response, stream_with_context
 import json
+import os
 from typing import List, Dict, Any
 from datetime import datetime
 from collections import defaultdict
@@ -399,6 +400,7 @@ def analyze_stream():
             # 🟢 开始分析数据
             results = []
             errors = []
+            processed_symbols = set()
             
             for i, record in enumerate(records):
                 try:
@@ -434,15 +436,22 @@ def analyze_stream():
                     )
                     results.append(analysis)
                     
-                    # 🟢 发送单条分析完成（可选）
-                    if i % 5 == 0 or i == len(records) - 1:  # 每 5 条或最后一条发送一次
-                        analyze_progress = {
-                            'type': 'analyze_progress', 
-                            'completed': i + 1, 
-                            'total': len(records)
-                        }
-                        yield f"data: {json.dumps(analyze_progress)}\n\n"
+                    # 记录唯一标的完成数量
+                    if symbol:
+                        processed_symbols.add(symbol)
                     
+                    # 🟢 发送单条分析完成进度（按唯一标的计数，与前端总数一致）
+                    analyze_progress = {
+                        'type': 'analyze_progress', 
+                        'completed': len(processed_symbols), 
+                        'total': num_symbols,
+                        'symbol': symbol,
+                        'percentage': round(100 * len(processed_symbols) / num_symbols, 1) if num_symbols else 100.0
+                    }
+                    yield f"data: {json.dumps(analyze_progress)}\n\n"
+                    # 方便诊断流式进度
+                    print(f"[SSE] analyze_progress {len(processed_symbols)}/{num_symbols} {symbol}")
+                
                 except Exception as e:
                     error_msg = f"标的 {record.get('symbol', f'#{i+1}')} 分析失败: {str(e)}"
                     errors.append(error_msg)
@@ -541,7 +550,9 @@ if __name__ == '__main__':
     print(">>>>>>>>> σ² <<<<<<<<<<<<<")
     
     try:
-        app.run(debug=True, host='0.0.0.0', port=8668)
+        debug_mode = os.environ.get("FLASK_DEBUG", "0") == "1"
+        # 默认关闭 reloader，避免长任务被热重载中断；需要调试时手动开启环境变量
+        app.run(debug=debug_mode, use_reloader=False, host='0.0.0.0', port=8668)
     except Exception as e:
         print(f"\n❌ 启动失败: {e}")
         import traceback
