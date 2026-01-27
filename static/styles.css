@@ -717,7 +717,8 @@ input:checked + .slider .slider-text.close {
 }
 
 .date-content.expanded {
-    max-height: 2000px;
+    /* 去掉固定上限，避免长列表被截断；具体高度由 JS 动态计算 */
+    max-height: 99999px;
     transition: max-height 0.5s ease-in;
 }
 

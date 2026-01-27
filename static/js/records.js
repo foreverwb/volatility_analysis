@@ -41,6 +41,14 @@ function getBadgeClass(confidence) {
 }
 
 /**
+ * 根据内容高度设置展开/收起的 max-height，避免长列表被截断
+ */
+function setDateContentHeight(content, expanded) {
+    if (!content) return;
+    content.style.maxHeight = expanded ? (content.scrollHeight + 'px') : '0px';
+}
+
+/**
  * 渲染记录列表
  */
 function renderRecordsList() {
@@ -182,6 +190,14 @@ function renderRecordsList() {
     });
     
     container.innerHTML = html;
+    
+    // 渲染后同步各日期块高度，防止条目过多时被 max-height 截断
+    sortedDates.forEach(function(date) {
+        var content = document.getElementById('content-' + date);
+        var expanded = AppState.expandedDates.has(date);
+        setDateContentHeight(content, expanded);
+    });
+    
     container.addEventListener('click', handleRecordsListClick);
 }
 
@@ -240,13 +256,17 @@ function toggleDateGroup(date) {
     var content = document.getElementById('content-' + date);
     var toggle = document.getElementById('toggle-' + date);
     
+    if (!content || !toggle) return;
+    
     if (content.classList.contains('expanded')) {
         content.classList.remove('expanded');
         toggle.classList.remove('expanded');
+        setDateContentHeight(content, false);
         AppState.expandedDates.delete(date);
     } else {
         content.classList.add('expanded');
         toggle.classList.add('expanded');
+        setDateContentHeight(content, true);
         AppState.expandedDates.add(date);
     }
 }
