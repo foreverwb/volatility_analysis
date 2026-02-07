@@ -36,6 +36,33 @@ def should_skip_oi_fetch() -> bool:
     return False
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or isinstance(value, bool):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _extract_score(record: Dict[str, Any], key: str, default: float = 0.0) -> float:
+    """兼容历史 payload: 优先 analysis 子对象，其次回退到顶层字段。"""
+    if not isinstance(record, dict):
+        return default
+
+    analysis_payload = record.get('analysis', {})
+    if isinstance(analysis_payload, dict):
+        sub = analysis_payload.get(key)
+        if sub is not None:
+            return _safe_float(sub, default)
+
+    top = record.get(key)
+    if top is not None:
+        return _safe_float(top, default)
+
+    return default
+
+
 def get_history_scores(symbol: str, days: int = 5, as_of_date: str = None) -> List[float]:
     """
     获取指定标的的历史方向评分（用于跨期一致性计算）
@@ -107,8 +134,8 @@ def get_history_scores(symbol: str, days: int = 5, as_of_date: str = None) -> Li
     history_scores = []
     for date_str in sorted_dates[:days]:
         record = daily_latest[date_str]
-        score = record.get('direction_score', 0)
-        history_scores.append(float(score))
+        score = _extract_score(record, 'direction_score', 0.0)
+        history_scores.append(score)
 
     return history_scores
 
@@ -157,13 +184,11 @@ def get_history_series(symbol: str, days: int = 5, as_of_date: str = None) -> Di
 
     for date_str in sorted_dates[:days]:
         record = daily_latest[date_str]
-        analysis_payload = record.get("analysis", {}) if isinstance(record.get("analysis"), dict) else {}
+        dir_score = _extract_score(record, "direction_score", 0.0)
+        vol_score = _extract_score(record, "vol_score", 0.0)
 
-        dir_score = analysis_payload.get("direction_score", record.get("direction_score", 0))
-        vol_score = analysis_payload.get("vol_score", record.get("vol_score", 0))
-
-        direction_scores.append(float(dir_score))
-        vol_scores.append(float(vol_score))
+        direction_scores.append(dir_score)
+        vol_scores.append(vol_score)
 
     return {"direction": direction_scores, "vol": vol_scores}
 
