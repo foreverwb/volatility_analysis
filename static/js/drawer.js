@@ -121,6 +121,9 @@ function showDrawer(timestamp, symbol) {
     var consistency = record.consistency || 0;
     var structureFactor = record.structure_factor || 1.0;
     var flowBias = record.flow_bias || 0;
+    var dirSlope = Number(record.dir_slope_nd || 0);
+    var dirTrendLabel = record.dir_trend_label || '横盘';
+    var trendDaysUsed = Number(record.trend_days_used || 0);
     
     // 🟩 v2.3.3: 动态参数
     var dynamicParams = record.dynamic_params || {};
@@ -189,6 +192,10 @@ function showDrawer(timestamp, symbol) {
     var consColor = consistency > 0.6 ? '#00C853' : (consistency < -0.6 ? '#FF3B30' : '#9E9E9E');
     var consLabel = consistency > 0.6 ? '(趋势持续)' : (consistency < -0.6 ? '(趋势反转)' : '(无明确趋势)');
     html += '<div class="detail-row"><div class="detail-label">📈 跨期一致性:</div><div class="detail-value" style="color: ' + consColor + '; font-weight: bold;">' + consistency.toFixed(3) + ' ' + consLabel + '</div></div>';
+
+    // 方案B: 数值斜率趋势叠加
+    var slopeColor = dirTrendLabel === '上行' ? '#00C853' : (dirTrendLabel === '下行' ? '#FF3B30' : '#9E9E9E');
+    html += '<div class="detail-row"><div class="detail-label">📐 斜率趋势:</div><div class="detail-value" style="color: ' + slopeColor + '; font-weight: bold;">' + dirTrendLabel + ' (' + dirSlope.toFixed(3) + ') · 样本' + trendDaysUsed + '天</div></div>';
     
     // Structure Factor
     var sfLabel = structureFactor > 1 ? '(单边趋势主导)' : (structureFactor < 1 ? '(对冲/联动交易)' : '(正常)');

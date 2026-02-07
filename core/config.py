@@ -98,6 +98,11 @@ DEFAULT_CFG = {
     "data_quality_notional_ceiling": 5_000_000_000,
     "data_quality_iv_ceiling": 300,
     
+    # 趋势叠加（数值斜率）配置
+    "trend_days": 5,
+    "trend_slope_up": 0.10,
+    "trend_slope_down": 0.10,
+
     # ========== 姿态/模板 Overlay ==========
     "posture_consistency_strong_threshold": 0.6,
     "posture_consistency_weak_threshold": 0.2,
@@ -186,5 +191,14 @@ def validate_config(cfg: dict) -> bool:
     
     if not (1 <= cfg.get("consistency_days", 5) <= 30):
         raise ValueError("consistency_days must be in [1, 30]")
+
+    if cfg.get("trend_days", 5) < 2:
+        raise ValueError("trend_days must be >= 2")
+
+    if cfg.get("trend_slope_up", 0.10) < 0:
+        raise ValueError("trend_slope_up must be >= 0")
+
+    if cfg.get("trend_slope_down", 0.10) < 0:
+        raise ValueError("trend_slope_down must be >= 0")
     
     return True

@@ -21,6 +21,7 @@ from .strategy import (
     map_direction_pref, map_vol_pref, combine_quadrant, get_strategy_info
 )
 from .posture import compute_posture_5d
+from .trend import compute_linear_slope, map_slope_trend
 from .guards import detect_fear_regime, evaluate_trade_permission, build_watchlist_guidance
 from .analyzer import calculate_analysis
 
@@ -63,7 +64,8 @@ __all__ = [
     
     # 策略
     'map_direction_pref', 'map_vol_pref', 'combine_quadrant', 'get_strategy_info',
-    'compute_posture_5d', 'detect_fear_regime', 'evaluate_trade_permission', 'build_watchlist_guidance',
+    'compute_posture_5d', 'compute_linear_slope', 'map_slope_trend',
+    'detect_fear_regime', 'evaluate_trade_permission', 'build_watchlist_guidance',
     
     # 分析器
     'calculate_analysis',

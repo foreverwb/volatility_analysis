@@ -19,6 +19,7 @@ from .scoring import compute_direction_score, compute_vol_score
 from .confidence import map_liquidity, map_confidence, penalize_extreme_move_low_vol
 from .strategy import map_direction_pref, map_vol_pref, combine_quadrant, get_strategy_info
 from .posture import compute_posture_5d
+from .trend import compute_linear_slope, map_slope_trend
 from .guards import detect_fear_regime, evaluate_trade_permission, build_watchlist_guidance
 
 from .market_data import get_vix_with_fallback
@@ -26,6 +27,23 @@ from .rolling_cache import get_global_cache, update_cache_with_record
 from .dynamic_params import compute_all_dynamic_params, validate_dynamic_params
 from bridge.builders import build_bridge_snapshot
 from bridge.micro_templates import select_micro_template
+
+
+def _count_valid_points(scores: Optional[List[float]], n_days: int) -> int:
+    if not scores or n_days <= 0:
+        return 0
+    valid = 0
+    for score in scores:
+        if isinstance(score, bool) or score is None:
+            continue
+        try:
+            float(score)
+            valid += 1
+        except (TypeError, ValueError):
+            continue
+        if valid >= n_days:
+            break
+    return valid
 
 
 def calculate_analysis(
@@ -158,6 +176,12 @@ def calculate_analysis(
     cp_ratio = compute_callput_ratio(normed)
     days_to_earnings = days_until(parse_earnings_date(normed.get("Earnings")))
     posture_info = compute_posture_5d(dir_score, history_scores, effective_cfg)
+
+    # 数值斜率趋势（与 posture_5d 的符号一致性互补）
+    trend_days = int(effective_cfg.get("trend_days", 5))
+    dir_slope = compute_linear_slope(history_scores or [], trend_days)
+    dir_trend_label = map_slope_trend(dir_slope, effective_cfg)
+    trend_days_used = _count_valid_points(history_scores, trend_days)
     
     # ============ 驱动因素 ============
     direction_factors = []
@@ -276,6 +300,10 @@ def calculate_analysis(
         'posture_confidence': posture_info.get("posture_confidence"),
         'posture_inputs_snapshot': posture_info.get("posture_inputs_snapshot"),
         'posture_overlay_notes': posture_overlay_notes,
+        # 趋势叠加：最近 N 日方向评分线性斜率及标签
+        'dir_slope_nd': round(dir_slope, 3),
+        'dir_trend_label': dir_trend_label,
+        'trend_days_used': trend_days_used,
         
         # 🟢 VIX 提升到顶层 (与 IVR/IV30 等同级)
         'vix': round(vix_value, 2) if vix_value else None,
@@ -377,6 +405,9 @@ def calculate_analysis(
         'posture_confidence': posture_info.get("posture_confidence"),
         'posture_inputs_snapshot': posture_info.get("posture_inputs_snapshot"),
         'posture_overlay_notes': posture_overlay_notes,
+        'dir_slope_nd': result.get('dir_slope_nd'),
+        'dir_trend_label': result.get('dir_trend_label'),
+        'trend_days_used': result.get('trend_days_used'),
     })
     
     micro_template = select_micro_template(bridge_payload, effective_cfg)
