@@ -36,7 +36,7 @@ def should_skip_oi_fetch() -> bool:
     return False
 
 
-def get_history_scores(symbol: str, n_days: int = 5, as_of_date: str = None) -> List[float]:
+def get_history_scores(symbol: str, days: int = 5, as_of_date: str = None) -> List[float]:
     """
     获取指定标的的历史方向评分（用于跨期一致性计算）
     
@@ -47,7 +47,7 @@ def get_history_scores(symbol: str, n_days: int = 5, as_of_date: str = None) -> 
     
     Args:
         symbol: 标的代码（大小写不敏感）
-        n_days: 需要的历史天数（默认 5 天）
+        days: 需要的历史天数（默认 5 天）
         as_of_date: 截止日期（格式: YYYY-MM-DD），默认为今天
         
     Returns:
@@ -100,17 +100,72 @@ def get_history_scores(symbol: str, n_days: int = 5, as_of_date: str = None) -> 
         day_records.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
         daily_latest[date_str] = day_records[0]
     
-    # 5. 按日期降序排序，取最近 n_days
+    # 5. 按日期降序排序，取最近 days
     sorted_dates = sorted(daily_latest.keys(), reverse=True)
-    
-    # 6. 提取方向评分（最多 n_days 条）
+
+    # 6. 提取方向评分（最多 days 条）
     history_scores = []
-    for date_str in sorted_dates[:n_days]:
+    for date_str in sorted_dates[:days]:
         record = daily_latest[date_str]
         score = record.get('direction_score', 0)
         history_scores.append(float(score))
-    
+
     return history_scores
+
+
+def get_history_series(symbol: str, days: int = 5, as_of_date: str = None) -> Dict[str, List[float]]:
+    """获取最近 N 个交易日的历史评分序列（方向+波动）。"""
+    records = records_repo.list_records_by_symbol(symbol)
+    symbol_upper = symbol.upper()
+
+    symbol_records = [
+        r for r in records
+        if r.get('symbol', "").upper() == symbol_upper
+    ]
+
+    if not symbol_records:
+        return {"direction": [], "vol": []}
+
+    if as_of_date is None:
+        as_of = datetime.now()
+    else:
+        try:
+            as_of = datetime.strptime(as_of_date, "%Y-%m-%d")
+        except ValueError:
+            as_of = datetime.now()
+
+    records_by_date = defaultdict(list)
+    for r in symbol_records:
+        timestamp = r.get("timestamp", "")
+        if not timestamp:
+            continue
+        try:
+            date_str = timestamp.split(" ")[0]
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            if dt <= as_of:
+                records_by_date[date_str].append(r)
+        except (ValueError, IndexError):
+            continue
+
+    daily_latest = {}
+    for date_str, day_records in records_by_date.items():
+        day_records.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        daily_latest[date_str] = day_records[0]
+
+    sorted_dates = sorted(daily_latest.keys(), reverse=True)
+    direction_scores, vol_scores = [], []
+
+    for date_str in sorted_dates[:days]:
+        record = daily_latest[date_str]
+        analysis_payload = record.get("analysis", {}) if isinstance(record.get("analysis"), dict) else {}
+
+        dir_score = analysis_payload.get("direction_score", record.get("direction_score", 0))
+        vol_score = analysis_payload.get("vol_score", record.get("vol_score", 0))
+
+        direction_scores.append(float(dir_score))
+        vol_scores.append(float(vol_score))
+
+    return {"direction": direction_scores, "vol": vol_scores}
 
 
 # =========================
@@ -203,8 +258,9 @@ def analyze():
                     if delta_oi is not None:
                         record['ΔOI_1D'] = delta_oi
                         
-                # 获取历史评分用于跨期一致性计算
-                history_scores = get_history_scores(symbol)
+                # 获取历史评分用于跨期一致性计算与斜率叠加
+                history_series = get_history_series(symbol, days=DEFAULT_CFG.get("trend_days", 5))
+                history_scores = history_series["direction"]
                 
                 # ✨ NEW: 传递 skip_oi 标志到分析函数
                 analysis = calculate_analysis(

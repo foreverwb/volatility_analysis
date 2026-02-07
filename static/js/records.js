@@ -159,6 +159,16 @@ function renderRecordsList() {
                 consistencyBadge = '<span class="badge-consistency-bear">❄️ 反转</span>';
             }
 
+            // 方案B: 数值斜率趋势标记（前端可视化）
+            var trendLabel = record.dir_trend_label || '横盘';
+            var trendDaysUsed = Number(record.trend_days_used || 0);
+            var dirSlope = Number(record.dir_slope_nd || 0);
+            var slopeBadge = '';
+            var slopeClass = trendLabel === '上行' ? 'badge-slope-up' : (trendLabel === '下行' ? 'badge-slope-down' : 'badge-slope-flat');
+            if (record.dir_trend_label !== undefined || record.dir_slope_nd !== undefined) {
+                slopeBadge = '<span class="' + slopeClass + '" title="基于最近' + trendDaysUsed + '天方向评分线性斜率">斜率:' + trendLabel + ' (' + dirSlope.toFixed(3) + ')</span>';
+            }
+
             var dirScore = record.direction_score;
             var volScore = record.vol_score;
             var dirColor = dirScore > 0 ? '#00C853' : (dirScore < 0 ? '#FF3B30' : '#9E9E9E');
@@ -169,7 +179,7 @@ function renderRecordsList() {
 
             html += '<div class="record-item" data-timestamp="' + record.timestamp + '" data-symbol="' + record.symbol + '">';
             html += '<div class="record-info">';
-            html += '<div class="record-symbol">' + record.symbol + eventBadge + typeBadge + squeezeBadge + aorBadge + consistencyBadge + '</div>';
+            html += '<div class="record-symbol">' + record.symbol + eventBadge + typeBadge + squeezeBadge + aorBadge + consistencyBadge + slopeBadge + '</div>';
             html += '<div class="record-meta">';
             html += '<span class="record-quadrant ' + quadrantClass + '">' + record.quadrant + '</span>';
             html += '<span class="record-confidence">置信度: <span class="badge ' + confidenceBadge + '">' + record.confidence + '</span></span>';

@@ -207,6 +207,9 @@ def build_bridge_snapshot(rec: Dict[str, Any], cfg: Dict[str, Any]) -> BridgeSna
         "posture_confidence": rec.get("posture_confidence"),
         "posture_inputs_snapshot": rec.get("posture_inputs_snapshot"),
         "posture_overlay_notes": rec.get("posture_overlay_notes"),
+        "dir_slope_nd": _safe_float(rec.get("dir_slope_nd")),
+        "dir_trend_label": rec.get("dir_trend_label"),
+        "trend_days_used": rec.get("trend_days_used"),
         "fear_regime": rec.get("fear_regime"),
         "fear_reasons": rec.get("fear_reasons"),
     }
