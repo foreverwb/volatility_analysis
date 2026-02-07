@@ -19,7 +19,9 @@ from storage.sqlite_repo import get_records_repo
 
 from core import (
     DEFAULT_CFG,
-    calculate_analysis
+    calculate_analysis,
+    compute_linear_slope,
+    map_slope_trend,
 )
 from core.futu_iv import fetch_iv_terms, estimate_iv_fetch_time
 from core.futu_oi import batch_compute_delta_oi
@@ -61,6 +63,66 @@ def _extract_score(record: Dict[str, Any], key: str, default: float = 0.0) -> fl
         return _safe_float(top, default)
 
     return default
+
+
+def _count_valid_points(scores: List[float], n_days: int) -> int:
+    if not scores or n_days <= 0:
+        return 0
+    valid = 0
+    for score in scores:
+        if score is None:
+            continue
+        try:
+            float(score)
+            valid += 1
+        except (TypeError, ValueError):
+            continue
+        if valid >= n_days:
+            break
+    return valid
+
+
+def _needs_trend_backfill(record: Dict[str, Any]) -> bool:
+    """是否需要对历史记录补算趋势字段（兼容旧 payload）。"""
+    if not isinstance(record, dict):
+        return False
+    return (
+        record.get("dir_slope_nd") is None
+        or record.get("dir_trend_label") in (None, "")
+        or record.get("trend_days_used") is None
+    )
+
+
+def enrich_records_with_trend_fields(records: List[Dict[str, Any]], cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """按 symbol+时间顺序补算缺失趋势字段，避免历史记录前端展示为 0。"""
+    trend_days = int(cfg.get("trend_days", 5))
+
+    # 保持原顺序，先构建索引
+    indexed = list(enumerate(records))
+    by_symbol: Dict[str, List] = defaultdict(list)
+    for idx, rec in indexed:
+        symbol = (rec.get("symbol") or "").upper()
+        by_symbol[symbol].append((idx, rec))
+
+    out = list(records)
+    for _symbol, items in by_symbol.items():
+        # 升序遍历，当前记录只使用“之前交易日”历史，贴近在线分析语义
+        items.sort(key=lambda x: x[1].get("timestamp", ""))
+        prior_scores: List[float] = []
+
+        for idx, rec in items:
+            dir_score_now = _extract_score(rec, "direction_score", 0.0)
+
+            if _needs_trend_backfill(rec):
+                history_recent_first = list(reversed(prior_scores))
+                slope = compute_linear_slope(history_recent_first, trend_days)
+                out[idx]["dir_slope_nd"] = round(slope, 3)
+                out[idx]["dir_trend_label"] = map_slope_trend(slope, cfg)
+                out[idx]["trend_days_used"] = _count_valid_points(history_recent_first, trend_days)
+
+            prior_scores.append(dir_score_now)
+
+    return out
 
 
 def get_history_scores(symbol: str, days: int = 5, as_of_date: str = None) -> List[float]:
@@ -343,6 +405,7 @@ def get_records():
             quadrant=quadrant_filter if quadrant_filter != 'all' else None,
             confidence=confidence_filter if confidence_filter != 'all' else None
         )
+        data = enrich_records_with_trend_fields(data, DEFAULT_CFG)
         return jsonify(data)
     
     except Exception as e:
