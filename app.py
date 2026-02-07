@@ -14,7 +14,7 @@ import os
 from typing import List, Dict, Any
 from datetime import datetime
 from collections import defaultdict
-from core.market_data import get_vix_info, clear_vix_cache
+from core.market_data import get_vix_info, clear_vix_cache, get_vix_with_fallback
 from storage.sqlite_repo import get_records_repo
 
 from core import (
@@ -298,14 +298,18 @@ def analyze():
         iv_data = {}
         oi_data = {}
 
+        # 只获取一次 VIX，避免随标的循环打印
+        vix_value = get_vix_with_fallback(default=18.0)
+
         if skip_iv:
             print(f"\n⏰ 当前时间早于 18:00 CST，跳过 IV 数据获取")
         else:
             iv_estimated_time = estimate_iv_fetch_time(num_symbols)
+            iv_estimated_minutes = iv_estimated_time / 60.0
             print(f"\n{'='*60}")
-            print("📊 IV 数据获取配置:")
+            print("[FUTU] 期权数据:")
             print(f"   - 标的数量: {num_symbols}")
-            print(f"   - 预计耗时: {iv_estimated_time:.1f}s")
+            print(f"   - 预计耗时: {iv_estimated_minutes:.1f} 分钟")
             print(f"{'='*60}\n")
             iv_data = fetch_iv_terms(symbols)
 
@@ -354,7 +358,8 @@ def analyze():
                     record,
                     ignore_earnings=ignore_earnings,
                     history_scores=history_scores,
-                    skip_oi=skip_oi  # ✨ 新增参数
+                    skip_oi=skip_oi,  # ✨ 新增参数
+                    vix_value=vix_value
                 )
                 results.append(analysis)
             except Exception as e:
@@ -509,15 +514,19 @@ def analyze_stream():
             # 初始化 IV / OI 数据
             iv_data = {}
             oi_data = {}
+
+            # 只获取一次 VIX，避免随标的循环打印
+            vix_value = get_vix_with_fallback(default=18.0)
             
             if skip_iv:
                 print(f"\n⏰ 当前时间早于 18:00 CST，跳过 IV 数据获取")
             else:
                 iv_estimated_time = estimate_iv_fetch_time(num_symbols)
+                iv_estimated_minutes = iv_estimated_time / 60.0
                 print(f"\n{'='*60}")
                 print("📊 IV 数据获取配置:")
                 print(f"   - 标的数量: {num_symbols}")
-                print(f"   - 预计耗时: {iv_estimated_time:.1f}s")
+                print(f"   - 预计耗时: {iv_estimated_minutes:.1f} 分钟")
                 print(f"{'='*60}\n")
                 iv_data = fetch_iv_terms(symbols)
 
@@ -576,7 +585,8 @@ def analyze_stream():
                         record,
                         ignore_earnings=ignore_earnings,
                         history_scores=history_scores,
-                        skip_oi=skip_oi  # ✨ 新增参数
+                        skip_oi=skip_oi,  # ✨ 新增参数
+                        vix_value=vix_value
                     )
                     results.append(analysis)
                     
