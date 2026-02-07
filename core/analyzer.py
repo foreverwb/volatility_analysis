@@ -51,7 +51,8 @@ def calculate_analysis(
     cfg: Dict[str, Any] = None,
     ignore_earnings: bool = False,
     history_scores: Optional[List[float]] = None,
-    skip_oi: bool = False  # ✨ NEW: 是否跳过 OI 相关计算
+    skip_oi: bool = False,  # ✨ NEW: 是否跳过 OI 相关计算
+    vix_value: Optional[float] = None
 ) -> Dict[str, Any]:
     """
     核心分析函数 - v2.3.3 (VIX持久化增强版)
@@ -85,9 +86,10 @@ def calculate_analysis(
     data_quality_issues = validation["data_quality_issues"]
     
     # ============ 🟢 强制获取 VIX (不受动态参数开关影响) ============
-    vix_value = get_vix_with_fallback(
-        default=effective_cfg.get("vix_fallback_value", 18.0)
-    )
+    if vix_value is None:
+        vix_value = get_vix_with_fallback(
+            default=effective_cfg.get("vix_fallback_value", 18.0)
+        )
     
     # ============ 动态参数计算 ============
     dynamic_params = None
