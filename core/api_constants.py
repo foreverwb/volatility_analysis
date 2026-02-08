@@ -1,0 +1,7 @@
+"""
+API-specific defaults and thresholds.
+"""
+
+BRIDGE_BATCH_MIN_DIRECTION_SCORE = 1.0
+BRIDGE_BATCH_MIN_VOL_SCORE = 0.8
+BRIDGE_BATCH_DEFAULT_LIMIT = 50
