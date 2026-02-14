@@ -89,6 +89,15 @@ function handleSymbolFilterChange() {
 }
 
 /**
+ * 处理斜率筛选变化
+ */
+function handleSlopeFilterChange() {
+    var slopeSelect = document.getElementById('slopeFilterSelect');
+    AppState.slopeFilter = slopeSelect.value;
+    renderRecordsList();
+}
+
+/**
  * 根据标的筛选记录
  */
 function filterBySymbol(records) {
@@ -102,6 +111,29 @@ function filterBySymbol(records) {
         return AppState.symbolFilter.some(function(filter) {
             return symbol.indexOf(filter) !== -1;
         });
+    });
+}
+
+/**
+ * 根据斜率筛选记录
+ */
+function filterBySlope(records) {
+    if (!AppState.slopeFilter || records.length === 0) {
+        return records;
+    }
+
+    return records.filter(function(record) {
+        var trendLabel = record.dir_trend_label;
+        if (trendLabel === '上行') return AppState.slopeFilter === 'up';
+        if (trendLabel === '下行') return AppState.slopeFilter === 'down';
+        if (trendLabel === '横盘') return AppState.slopeFilter === 'flat';
+
+        // 兼容历史数据：无趋势标签时，退化为按数值斜率符号判断
+        var slope = Number(record.dir_slope_nd);
+        if (!isFinite(slope)) return false;
+        if (slope > 0) return AppState.slopeFilter === 'up';
+        if (slope < 0) return AppState.slopeFilter === 'down';
+        return AppState.slopeFilter === 'flat';
     });
 }
 
@@ -138,3 +170,5 @@ window.handleSortChange = handleSortChange;
 window.sortRecords = sortRecords;
 window.handleSymbolFilterChange = handleSymbolFilterChange;
 window.filterBySymbol = filterBySymbol;
+window.handleSlopeFilterChange = handleSlopeFilterChange;
+window.filterBySlope = filterBySlope;

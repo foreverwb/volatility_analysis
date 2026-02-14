@@ -61,6 +61,7 @@ function renderRecordsList() {
     
     // 先进行标的筛选
     var filteredRecords = filterBySymbol(AppState.allRecords);
+    filteredRecords = filterBySlope(filteredRecords);
     
     var groupedByDate = {};
     filteredRecords.forEach(function(record) {

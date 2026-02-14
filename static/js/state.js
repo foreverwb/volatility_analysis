@@ -14,6 +14,7 @@ var AppState = {
     hasInitializedCanvas: false,
     sortBy: '',  // 排序字段：'direction' 或 'volatility' 或 ''
     symbolFilter: [],  // 标的筛选：支持多个symbol，以逗号分隔
+    slopeFilter: '',  // 斜率筛选：'up' | 'down' | 'flat' | ''
     earningsDisplayThreshold: 25
 };
 
