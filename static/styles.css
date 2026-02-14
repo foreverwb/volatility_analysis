@@ -324,17 +324,17 @@ button {
     display: flex;
     gap: 12px;
     align-items: flex-start;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
 }
 
 .filter-group {
-    flex: 1;
-    min-width: 140px;
+    flex: 1 1 0;
+    min-width: 0;
 }
 .filter-group:first-child {
-    flex: 0 0 auto;
-    min-width: 140px;
-    max-width: 200px;
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: none;
 }
 
 @media (max-width: 768px) {
