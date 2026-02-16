@@ -346,6 +346,13 @@ def analyze():
                 # 注入 OI 数据（如果有）
                 if not skip_oi and symbol in oi_data:
                     current_oi, delta_oi = oi_data[symbol]
+                    record['oi_info'] = {
+                        'total_oi': current_oi,
+                        'delta_oi_1d': delta_oi,
+                        'data_available': (current_oi is not None or delta_oi is not None),
+                    }
+                    if current_oi is not None:
+                        record['TotalOI'] = current_oi
                     if delta_oi is not None:
                         record['ΔOI_1D'] = delta_oi
                         
@@ -574,6 +581,13 @@ def analyze_stream():
                     # 注入 OI 数据（如果有）
                     if not skip_oi and symbol in oi_data:
                         current_oi, delta_oi = oi_data[symbol]
+                        record['oi_info'] = {
+                            'total_oi': current_oi,
+                            'delta_oi_1d': delta_oi,
+                            'data_available': (current_oi is not None or delta_oi is not None),
+                        }
+                        if current_oi is not None:
+                            record['TotalOI'] = current_oi
                         if delta_oi is not None:
                             record['ΔOI_1D'] = delta_oi
                     

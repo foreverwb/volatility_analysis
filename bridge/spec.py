@@ -11,7 +11,7 @@ class TermStructureSnapshot:
     label_code: Optional[str] = None
     ratio_30_90: Optional[float] = None
     adjustment: float = 0.0
-    horizon_bias: Dict[str, float] = field(default_factory=dict)
+    horizon_bias: str = "neutral"
     state_flags: Dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:

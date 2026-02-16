@@ -2,23 +2,34 @@
 期权策略量化分析系统 v2.3.3 核心模块
 Dynamic Parameter Adaptation Layer
 """
-from .config import DEFAULT_CFG, INDEX_TICKERS, get_dynamic_thresholds, validate_config
+from .config import DEFAULT_CFG, INDEX_TICKERS, get_dynamic_thresholds, get_vol_score_threshold, validate_config
 from .cleaning import clean_record, normalize_dataset
 from .validation import validate_record
 from .metrics import (
     compute_volume_bias, compute_notional_bias, compute_callput_ratio,
     compute_ivrv, compute_iv_ratio, compute_regime_ratio,
     compute_spot_vol_correlation_score, detect_squeeze_potential,
+    compute_squeeze_score,
     compute_active_open_ratio, compute_term_structure,
     parse_earnings_date, days_until
 )
-from .scoring import compute_direction_score, compute_vol_score
+from .features import build_features
+from .term_structure import (
+    compute_term_structure_ratios as compute_term_structure_ratios_shared,
+    classify_term_structure_label,
+    compute_term_structure_adjustment as compute_term_structure_adjustment_shared,
+    map_horizon_bias_to_dte_bias,
+)
+from .scoring import (
+    compute_direction_components, compute_direction_score,
+    compute_vol_components, compute_vol_score
+)
 from .confidence import (
-    map_liquidity, map_confidence, compute_structure_factor,
+    compute_liquidity_score, map_liquidity, map_confidence, compute_confidence_components, compute_structure_factor,
     compute_intertemporal_consistency, penalize_extreme_move_low_vol
 )
 from .strategy import (
-    map_direction_pref, map_vol_pref, combine_quadrant, get_strategy_info
+    map_direction_pref, map_vol_pref, combine_quadrant, get_strategy_info, get_strategy_structures, apply_disabled_structures, load_strategy_map
 )
 from .posture import compute_posture_5d
 from .trend import compute_linear_slope, map_slope_trend
@@ -43,7 +54,7 @@ from .oi_fetcher import (
 )
 __all__ = [
     # 配置
-    'DEFAULT_CFG', 'INDEX_TICKERS', 'get_dynamic_thresholds', 'validate_config',
+    'DEFAULT_CFG', 'INDEX_TICKERS', 'get_dynamic_thresholds', 'get_vol_score_threshold', 'validate_config',
     
     # 数据清洗
     'clean_record', 'normalize_dataset', 'validate_record',
@@ -52,18 +63,22 @@ __all__ = [
     'compute_volume_bias', 'compute_notional_bias', 'compute_callput_ratio',
     'compute_ivrv', 'compute_iv_ratio', 'compute_regime_ratio',
     'compute_spot_vol_correlation_score', 'detect_squeeze_potential',
+    'compute_squeeze_score',
     'compute_active_open_ratio', 'compute_term_structure',
     'parse_earnings_date', 'days_until',
+    'build_features',
+    'compute_term_structure_ratios_shared', 'classify_term_structure_label', 'compute_term_structure_adjustment_shared', 'map_horizon_bias_to_dte_bias',
     
     # 评分
-    'compute_direction_score', 'compute_vol_score',
+    'compute_direction_components', 'compute_direction_score',
+    'compute_vol_components', 'compute_vol_score',
     
     # 置信度
-    'map_liquidity', 'map_confidence', 'compute_structure_factor',
+    'compute_liquidity_score', 'map_liquidity', 'map_confidence', 'compute_confidence_components', 'compute_structure_factor',
     'compute_intertemporal_consistency', 'penalize_extreme_move_low_vol',
     
     # 策略
-    'map_direction_pref', 'map_vol_pref', 'combine_quadrant', 'get_strategy_info',
+    'map_direction_pref', 'map_vol_pref', 'combine_quadrant', 'get_strategy_info', 'get_strategy_structures', 'apply_disabled_structures', 'load_strategy_map',
     'compute_posture_5d', 'compute_linear_slope', 'map_slope_trend',
     'detect_fear_regime', 'evaluate_trade_permission', 'build_watchlist_guidance',
     

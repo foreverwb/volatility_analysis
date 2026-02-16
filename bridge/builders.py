@@ -1,10 +1,11 @@
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from core.metrics import (
+from core.metrics import parse_earnings_date
+from core.term_structure import (
+    classify_term_structure_label,
     compute_term_structure_adjustment,
     compute_term_structure_ratios,
-    parse_earnings_date,
 )
 
 from .spec import BridgeSnapshot, TermStructureSnapshot
@@ -21,72 +22,18 @@ def _safe_float(val: Any) -> Optional[float]:
         return None
 
 
-def _classify_term_structure(ratios: Dict[str, float]) -> str:
-    short = ratios.get("7_30")
-    mid = ratios.get("30_60")
-    long = ratios.get("60_90")
-
-    if short is None or mid is None or long is None:
-        return "N/A"
-
-    if short > 1.05 and mid > 1.05 and long > 1.05:
-        return "全面倒挂 (Full inversion)"
-    if short > 1.05 and mid <= 1.0:
-        return "短期倒挂 (Short-term inversion)"
-    if mid > 1.05 and short <= 1.02 and long <= 1.0:
-        return "中期突起 (Mid-term bulge)"
-    if long > 1.05 and mid <= 1.0:
-        return "远期过高 (Far-term elevated)"
-    if short < 0.9 and mid >= 0.95:
-        return "短期低位 (Short-term low)"
-    if short < 1.0 and mid < 1.0 and long < 1.0:
-        return "正常陡峭 (Normal steep)"
-    return "正常陡峭 (Normal steep)"
-
-
-def _state_flags(label: str) -> Dict[str, bool]:
-    label = label or ""
-    return {
-        "full_inversion": "Full inversion" in label or "全面倒挂" in label,
-        "short_inversion": "Short-term inversion" in label or "短期倒挂" in label,
-        "mid_bulge": "Mid-term bulge" in label or "中期突起" in label,
-        "far_elevated": "Far-term elevated" in label or "远期过高" in label,
-        "short_low": "Short-term low" in label or "短期低位" in label,
-        "normal_steep": "Normal steep" in label or "正常陡峭" in label,
-    }
-
-
-def _derive_label_code(flags: Dict[str, bool]) -> str:
-    priority = [
+def _state_flags_from_label_code(label_code: str) -> Dict[str, bool]:
+    keys = [
         "full_inversion",
         "short_inversion",
         "mid_bulge",
         "far_elevated",
         "short_low",
         "normal_steep",
+        "flat",
+        "unknown",
     ]
-    for key in priority:
-        if flags.get(key):
-            return key
-    return "unknown"
-
-
-def _heuristic_bias(label_code: str) -> Dict[str, float]:
-    heuristics = {
-        "short_low": {"short": 0.20, "mid": -0.05, "long": -0.10},
-        "full_inversion": {"short": 0.25, "mid": -0.10, "long": -0.20},
-        "far_elevated": {"short": -0.05, "mid": 0.10, "long": 0.20},
-        "normal_steep": {"short": -0.05, "mid": 0.05, "long": 0.10},
-    }
-    return heuristics.get(label_code, {"short": 0.0, "mid": 0.0, "long": 0.0})
-
-
-def _horizon_bias(label_code: str, cfg: Dict[str, Any]) -> Dict[str, float]:
-    defaults = (cfg or {}).get("bridge_term_structure_horizon_bias", {}) or {}
-    bias = defaults.get(label_code) or defaults.get("default")
-    if bias:
-        return bias
-    return _heuristic_bias(label_code)
+    return {key: (key == label_code) for key in keys}
 
 
 def _extract_symbol(rec: Dict[str, Any]) -> Optional[str]:
@@ -118,19 +65,18 @@ def _parse_earnings_iso(rec: Dict[str, Any]) -> Optional[str]:
 
 def build_term_structure_snapshot(rec: Dict[str, Any], cfg: Dict[str, Any]) -> TermStructureSnapshot:
     ratios = compute_term_structure_ratios(rec)
-    ratio_30_90 = ratios.get("30_90")
-
-    # compute_term_structure returns (ratio, ratio_string), but we only need ratios + label
-    label = _classify_term_structure(ratios)
+    ratio_30_90 = ratios.get("30_90", ratios.get("iv30_iv90_ratio"))
+    label_meta = classify_term_structure_label(ratios, cfg)
+    label = label_meta.get("label", "N/A")
+    label_code = label_meta.get("label_code", "unknown")
+    horizon_bias = str(label_meta.get("horizon_bias", "neutral") or "neutral")
 
     try:
-        adjustment = compute_term_structure_adjustment(rec, cfg)
+        adjustment = compute_term_structure_adjustment(label_meta, ratios, cfg)
     except Exception:
         adjustment = 0.0
 
-    state_flags = _state_flags(label)
-    label_code = _derive_label_code(state_flags)
-    horizon_bias = _horizon_bias(label_code, cfg)
+    state_flags = _state_flags_from_label_code(label_code)
 
     return TermStructureSnapshot(
         ratios=ratios,
@@ -169,6 +115,8 @@ def build_bridge_snapshot(rec: Dict[str, Any], cfg: Dict[str, Any]) -> BridgeSna
         "hv20": _safe_float(rec.get("HV20") or rec.get("hv20")),
         "hv1y": _safe_float(rec.get("HV1Y") or rec.get("hv1y")),
         "term_structure_label": term_structure.label,
+        "term_structure_label_code": term_structure.label_code,
+        "term_structure_horizon_bias": term_structure.horizon_bias,
         "term_structure_ratio": term_structure.ratio_30_90,
         "term_structure_adjustment": term_structure.adjustment,
     }

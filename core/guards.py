@@ -3,6 +3,7 @@
 """
 from typing import Any, Dict, List, Tuple
 
+from .config import get_vol_score_threshold
 from .metrics import compute_iv_ratio, compute_regime_ratio
 from .strategy import map_direction_pref, map_vol_pref, combine_quadrant
 
@@ -116,7 +117,7 @@ def build_watchlist_guidance(
     
     triggers: List[Dict[str, str]] = []
     watch_dir_th = float(cfg.get("watch_direction_trigger", 0.8))
-    vol_th = float(cfg.get("penalty_vol_pct_thresh", 0.4))
+    vol_th = get_vol_score_threshold(cfg, default=0.4)
     
     # 方向触发
     dir_up = map_direction_pref(watch_dir_th + 0.01)

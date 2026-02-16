@@ -8,19 +8,30 @@ from typing import Any, Dict, List, Optional
 from .config import DEFAULT_CFG, INDEX_TICKERS, get_dynamic_thresholds
 from .cleaning import clean_record, normalize_dataset
 from .validation import validate_record
-from .metrics import (
-    compute_volume_bias, compute_notional_bias, compute_callput_ratio,
-    compute_ivrv, compute_iv_ratio, compute_regime_ratio,
-    compute_spot_vol_correlation_score, detect_squeeze_potential,
-    compute_active_open_ratio, compute_term_structure, compute_term_structure_ratios,
-    parse_earnings_date, days_until
+from .features import build_features
+from .scoring import (
+    compute_direction_components,
+    compute_direction_score,
+    compute_vol_components,
+    compute_vol_score,
 )
-from .scoring import compute_direction_score, compute_vol_score
-from .confidence import map_liquidity, map_confidence, penalize_extreme_move_low_vol
-from .strategy import map_direction_pref, map_vol_pref, combine_quadrant, get_strategy_info
+from .confidence import (
+    compute_liquidity_score,
+    map_liquidity,
+    compute_confidence_components,
+    penalize_extreme_move_low_vol,
+)
+from .strategy import (
+    map_direction_pref,
+    map_vol_pref,
+    combine_quadrant,
+    get_strategy_info,
+    get_strategy_structures,
+)
 from .posture import compute_posture_5d
 from .trend import compute_linear_slope, map_slope_trend
 from .guards import detect_fear_regime, evaluate_trade_permission, build_watchlist_guidance
+from .metrics import compute_squeeze_score
 
 from .market_data import get_vix_with_fallback
 from .rolling_cache import get_global_cache, update_cache_with_record
@@ -84,6 +95,24 @@ def calculate_analysis(
     validation = validate_record(normed, effective_cfg)
     data_quality = validation["data_quality"]
     data_quality_issues = validation["data_quality_issues"]
+
+    # ============ 统一特征构建 ============
+    features = build_features(normed, effective_cfg)
+    oi_info = normed.get("oi_info") if isinstance(normed.get("oi_info"), dict) else {}
+    if isinstance(oi_info.get("data_available"), bool):
+        oi_data_available = bool(oi_info.get("data_available"))
+    elif skip_oi:
+        oi_data_available = False
+    else:
+        oi_info_total = oi_info.get("total_oi", oi_info.get("current_oi"))
+        oi_info_delta = oi_info.get("delta_oi_1d", oi_info.get("delta_oi"))
+        if oi_info_total is None and oi_info_delta is None:
+            oi_data_available = (
+                isinstance(features.get("total_oi"), (int, float))
+                or isinstance(features.get("delta_oi_1d"), (int, float))
+            )
+        else:
+            oi_data_available = True
     
     # ============ 🟢 强制获取 VIX (不受动态参数开关影响) ============
     if vix_value is None:
@@ -113,35 +142,48 @@ def calculate_analysis(
         except Exception as e:
             print(f"⚠ Warning: Dynamic params calculation failed: {e}")
             dynamic_params = None
+
+    # 运行时上下文注入到 features（供评分/置信度分项计算）
+    dynamic_apply = bool(dynamic_params and effective_cfg.get("enable_dynamic_params", True))
+    features["skip_oi"] = bool(skip_oi)
+    features["oi_data_available"] = bool(oi_data_available)
+    features["ignore_earnings"] = bool(ignore_earnings)
+    features["dynamic_apply"] = dynamic_apply
+    if dynamic_apply:
+        features["beta_t"] = float(dynamic_params.get("beta_t", effective_cfg.get("beta_base", 0.25)))
+        features["lambda_t"] = float(dynamic_params.get("lambda_t", effective_cfg.get("lambda_base", 0.45)))
+        features["alpha_t"] = float(dynamic_params.get("alpha_t", effective_cfg.get("alpha_base", 0.45)))
+    else:
+        features["beta_t"] = float(effective_cfg.get("active_open_ratio_beta", 0.5))
+        features["lambda_t"] = None
+        features["alpha_t"] = None
     
     # ============ 基础指标计算 ============
-    spot_vol_score = compute_spot_vol_correlation_score(normed)
-    is_squeeze = detect_squeeze_potential(normed, effective_cfg)
-    term_structure_val, term_structure_str = compute_term_structure(normed)
-    term_ratios = compute_term_structure_ratios(normed)
+    spot_vol_score = float(features.get("spot_vol_score", 0.0) or 0.0)
+    squeeze_score, squeeze_reasons = compute_squeeze_score(features, effective_cfg)
+    squeeze_trigger = float(effective_cfg.get("squeeze_score_trigger", 0.70))
+    is_squeeze = bool(squeeze_score >= squeeze_trigger)
+    features["squeeze_score"] = float(squeeze_score)
+    features["squeeze_reasons"] = list(squeeze_reasons)
+    features["is_squeeze"] = is_squeeze
+    term_structure_str = features.get("term_structure_ratio", "N/A")
+    term_structure_label_code = features.get("term_structure_label_code", "unknown")
+    term_structure_horizon_bias = features.get("term_structure_horizon_bias", "neutral")
+    term_structure_dte_bias = features.get("term_structure_dte_bias", "neutral")
     fear_flag, fear_reasons = detect_fear_regime(normed, term_structure_str, vix_value, effective_cfg)
     
     # ✨ NEW: 条件计算 ActiveOpenRatio
     if skip_oi:
         active_open_ratio = 0.0  # 跳过 OI 时设为 0
     else:
-        active_open_ratio = compute_active_open_ratio(normed)
+        active_open_ratio = float(features.get("active_open_ratio", 0.0) or 0.0)
     
     # ============ 评分计算 ============
-    # ✨ NEW: 传递 skip_oi 标志
-    dir_score = compute_direction_score(
-        normed, 
-        effective_cfg, 
-        dynamic_params=dynamic_params,
-        skip_oi=skip_oi  # ✨ 新增参数
-    )
-    
-    vol_score = compute_vol_score(
-        normed, 
-        effective_cfg, 
-        ignore_earnings=ignore_earnings, 
-        dynamic_params=dynamic_params
-    )
+    direction_components = compute_direction_components(features, effective_cfg)
+    dir_score = compute_direction_score(features, effective_cfg)
+
+    vol_components = compute_vol_components(features, effective_cfg)
+    vol_score = compute_vol_score(features, effective_cfg)
     
     # ============ 偏好映射 ============
     dir_pref = map_direction_pref(dir_score)
@@ -149,10 +191,29 @@ def calculate_analysis(
     quadrant = combine_quadrant(dir_pref, vol_pref)
     
     # ============ 流动性与置信度 ============
-    liquidity = map_liquidity(normed, effective_cfg)
-    confidence, structure_factor, consistency = map_confidence(
-        dir_score, vol_score, liquidity, normed, effective_cfg, history_scores
+    liquidity_score, liquidity_reasons = compute_liquidity_score(normed, effective_cfg)
+    liquidity = map_liquidity(liquidity_score, effective_cfg)
+    features["liquidity"] = liquidity
+    features["liquidity_score"] = float(liquidity_score)
+    features["liquidity_reasons"] = list(liquidity_reasons)
+    features["history_scores"] = list(history_scores) if isinstance(history_scores, list) else []
+
+    confidence_components = compute_confidence_components(
+        features,
+        dir_score,
+        vol_score,
+        effective_cfg,
+        oi_data_available=oi_data_available,
     )
+    confidence = confidence_components.get("label", "低")
+    confidence_score = float(
+        confidence_components.get(
+            "confidence_score",
+            confidence_components.get("final_strength", 0.0),
+        )
+    )
+    structure_factor = float(confidence_components.get("structure_factor", 1.0))
+    consistency = float(confidence_components.get("consistency", 0.0))
     confidence_notes = []
     if data_quality == "LOW" and confidence != "低":
         confidence_notes.append("数据质量LOW→置信度降级")
@@ -160,23 +221,32 @@ def calculate_analysis(
     elif data_quality == "MED" and confidence == "高":
         confidence_notes.append("数据质量MED→置信度降级为中")
         confidence = "中"
+    confidence_components["label_after_quality_gate"] = confidence
+    confidence_components["quality_gate_applied"] = bool(confidence_notes)
     penal_flag = penalize_extreme_move_low_vol(normed, effective_cfg)
     
     # ============ 策略建议 ============
-    strategy_info = get_strategy_info(quadrant, liquidity, is_squeeze=is_squeeze)
+    strategy_info = get_strategy_info(
+        quadrant,
+        liquidity,
+        is_squeeze=is_squeeze,
+        features=features,
+        cfg=effective_cfg,
+    )
     
     # ============ 派生指标 ============
-    iv30 = normed.get("IV30")
-    hv20 = normed.get("HV20", 1)
-    hv1y = normed.get("HV1Y", 1)
-    ivrv_ratio = (iv30 / hv20) if (isinstance(iv30, (int, float)) and isinstance(hv20, (int, float)) and hv20 > 0) else 1.0
-    ivrv_diff = (iv30 - hv20) if (isinstance(iv30, (int, float)) and isinstance(hv20, (int, float))) else 0.0
-    ivrv_log = compute_ivrv(normed)
-    regime_ratio = (hv20 / hv1y) if (isinstance(hv20, (int, float)) and isinstance(hv1y, (int, float)) and hv1y > 0) else 1.0
-    vol_bias = compute_volume_bias(normed)
-    notional_bias = compute_notional_bias(normed)
-    cp_ratio = compute_callput_ratio(normed)
-    days_to_earnings = days_until(parse_earnings_date(normed.get("Earnings")))
+    ivrv_ratio = float(features.get("ivrv_ratio", 1.0) or 1.0)
+    ivrv_diff = float(features.get("ivrv_diff", 0.0) or 0.0)
+    ivrv_log = float(features.get("ivrv_log", 0.0) or 0.0)
+    regime_ratio = float(features.get("regime_ratio", 1.0) or 1.0)
+    vol_bias = float(features.get("volume_bias", 0.0) or 0.0)
+    notional_bias = float(features.get("notional_bias", 0.0) or 0.0)
+    cp_ratio = float(features.get("cp_ratio", 1.0) or 1.0)
+    days_to_earnings = features.get("days_to_earnings")
+    total_oi = features.get("total_oi")
+    delta_oi_1d = features.get("delta_oi_1d")
+    delta_oi_pct = features.get("delta_oi_pct")
+    oi_turnover = features.get("oi_turnover")
     posture_info = compute_posture_5d(dir_score, history_scores, effective_cfg)
 
     # 数值斜率趋势（与 posture_5d 的符号一致性互补）
@@ -285,8 +355,11 @@ def calculate_analysis(
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'quadrant': quadrant,
         'confidence': confidence,
+        'confidence_score': round(confidence_score, 3),
         'confidence_notes': confidence_notes,
         'liquidity': liquidity,
+        'liquidity_score': round(float(liquidity_score), 3),
+        'liquidity_reasons': list(liquidity_reasons),
         'data_quality': data_quality,
         'data_quality_issues': data_quality_issues,
         'penalized_extreme_move_low_vol': penal_flag,
@@ -317,21 +390,33 @@ def calculate_analysis(
         
         # 高级指标
         'is_squeeze': is_squeeze,
+        'squeeze_score': round(float(squeeze_score), 3),
+        'squeeze_reasons': list(squeeze_reasons),
         'is_index': symbol in INDEX_TICKERS,
         'spot_vol_corr_score': round(spot_vol_score, 2),
         'term_structure_ratio': term_structure_str,
+        'term_structure_label_code': term_structure_label_code,
+        'term_structure_horizon_bias': term_structure_horizon_bias,
+        'term_structure_dte_bias': term_structure_dte_bias,
         
         'active_open_ratio': round(active_open_ratio, 4),
+        'total_oi': total_oi,
+        'delta_oi_1d': delta_oi_1d,
+        'delta_oi_pct': delta_oi_pct,
+        'oi_turnover': oi_turnover,
         'consistency': round(consistency, 3),
         'structure_factor': round(structure_factor, 2),
         'flow_bias': round(notional_bias, 3),
         
         # ✨ NEW: 添加 OI 状态标记
-        'oi_data_available': not skip_oi,
+        'oi_data_available': bool(oi_data_available),
         
         # 评分
         'direction_score': round(dir_score, 3),
         'vol_score': round(vol_score, 3),
+        'direction_components': direction_components,
+        'vol_components': vol_components,
+        'confidence_components': confidence_components,
         'direction_bias': dir_pref,
         'vol_bias': vol_pref,
         'direction_factors': direction_factors,
@@ -360,10 +445,12 @@ def calculate_analysis(
             'cp_ratio': round(cp_ratio, 3),
             'days_to_earnings': days_to_earnings
         },
+        'features': features,
         
         # 策略建议
         'strategy': strategy_info['策略'],
         'risk': strategy_info['风险'],
+        'strategy_structures': [],
         'raw_data': data
     }
 
@@ -383,6 +470,7 @@ def calculate_analysis(
         'direction_bias': dir_pref,
         'vol_bias': vol_pref,
         'confidence': confidence,
+        'confidence_score': confidence_score,
         'confidence_notes': confidence_notes,
         'data_quality': data_quality,
         'data_quality_issues': data_quality_issues,
@@ -390,10 +478,18 @@ def calculate_analysis(
         'permission_reasons': permission_info["permission_reasons"],
         'disabled_structures': permission_info["disabled_structures"],
         'liquidity': liquidity,
+        'liquidity_score': liquidity_score,
+        'liquidity_reasons': liquidity_reasons,
         'active_open_ratio': active_open_ratio,
+        'total_oi': total_oi,
+        'delta_oi_1d': delta_oi_1d,
+        'delta_oi_pct': delta_oi_pct,
+        'oi_turnover': oi_turnover,
         'oi_data_available': result.get('oi_data_available'),
         'flow_bias': notional_bias,
         'is_squeeze': is_squeeze,
+        'squeeze_score': squeeze_score,
+        'squeeze_reasons': squeeze_reasons,
         'is_index': symbol in INDEX_TICKERS,
         'days_to_earnings': days_to_earnings,
         'penalized_extreme_move_low_vol': penal_flag,
@@ -410,6 +506,9 @@ def calculate_analysis(
         'dir_slope_nd': result.get('dir_slope_nd'),
         'dir_trend_label': result.get('dir_trend_label'),
         'trend_days_used': result.get('trend_days_used'),
+        'term_structure_label_code': term_structure_label_code,
+        'term_structure_horizon_bias': term_structure_horizon_bias,
+        'term_structure_dte_bias': term_structure_dte_bias,
     })
     
     micro_template = select_micro_template(bridge_payload, effective_cfg)
@@ -421,10 +520,24 @@ def calculate_analysis(
     result['trade_permission'] = permission_info["trade_permission"]
     result['permission_reasons'] = permission_info["permission_reasons"]
     result['disabled_structures'] = permission_info["disabled_structures"]
+    strategy_structures = get_strategy_structures(
+        quadrant=quadrant,
+        disabled_structures=permission_info["disabled_structures"],
+        permission_reasons=permission_info["permission_reasons"],
+        cfg=effective_cfg,
+    )
+    dte_bias = micro_template.get("dte_bias")
+    if isinstance(dte_bias, str) and dte_bias and dte_bias != "neutral":
+        for structure in strategy_structures:
+            notes = list(structure.get("notes") or [])
+            notes.append(f"DTE_BIAS:{dte_bias}")
+            structure["notes"] = notes
+    result['strategy_structures'] = strategy_structures
     bridge_payload.update({
         'trade_permission': permission_info["trade_permission"],
         'permission_reasons': permission_info["permission_reasons"],
         'disabled_structures': permission_info["disabled_structures"],
+        'strategy_structures': strategy_structures,
     })
     
     bridge_snapshot = build_bridge_snapshot(bridge_payload, effective_cfg).to_dict()

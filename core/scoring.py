@@ -1,227 +1,318 @@
 """
 评分模型模块 - v2.3.3
-应用动态参数化机制
-✨ NEW: 支持时间限制跳过 OI 修正
+支持分项贡献（components）输出，便于调试与回测
 """
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-from .metrics import (
-    compute_volume_bias, compute_notional_bias, compute_callput_ratio,
-    compute_ivrv, compute_iv_ratio, compute_regime_ratio,
-    compute_spot_vol_correlation_score, compute_active_open_ratio,
+from .term_structure import (
+    classify_term_structure_label,
     compute_term_structure_adjustment,
-    parse_earnings_date, days_until
+    compute_term_structure_ratios,
+    map_horizon_bias_to_dte_bias,
 )
 
 
-def compute_direction_score(
-    rec: Dict[str, Any],
-    cfg: Dict[str, Any],
-    dynamic_params: Optional[Dict[str, float]] = None,
-    skip_oi: bool = False  # ✨ NEW: 是否跳过 OI 修正
-) -> float:
+def _is_number(val: Any) -> bool:
+    return isinstance(val, (int, float)) and not isinstance(val, bool)
+
+
+def _as_float(val: Any, default: float = 0.0) -> float:
+    if _is_number(val):
+        return float(val)
+    try:
+        return float(val)
+    except Exception:
+        return float(default)
+
+
+def compute_direction_components(features: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
-    方向分数计算 - v2.3.3 动态参数版本
-    
-    改进：
-    1. 支持动态 βₜ 参数（从 dynamic_params 获取）
-    2. 如果 dynamic_params 为 None，回退到 v2.3.2 固定参数
-    3. ✨ NEW: 支持时间限制跳过 AOR 修正（18:00 前）
-    
-    公式：DirScore_adj = DirScore × (1 + βₜ·tanh(ActiveOpenRatio))
-    
-    Args:
-        rec: 记录数据
-        cfg: 配置参数
-        dynamic_params: 动态参数字典
-        skip_oi: ✨ 是否跳过 AOR 修正（无 OI 数据时为 True）
+    DirectionScore 分项贡献。
+
+    总分还原公式：
+      final_score = base_sum * structure_amp * aor_gate
     """
-    price_chg_pct = rec.get("PriceChgPct", 0.0) or 0.0
-    rel_vol = rec.get("RelVolTo90D", 1.0) or 1.0
-    vol_bias = compute_volume_bias(rec)
-    notional_bias = compute_notional_bias(rec)
-    cp_ratio = compute_callput_ratio(rec)
-    put_pct = rec.get("PutPct", None)
-    single_leg = rec.get("SingleLegPct", None)
-    multi_leg = rec.get("MultiLegPct", None)
-    contingent = rec.get("ContingentPct", None)
-    
-    # ============ 基础分数计算 ============
-    
-    # 价格项: tanh 平滑
-    price_term = 0.90 * math.tanh(float(price_chg_pct) / 1.75)
-    
-    # 名义与量偏度
-    notional_term = 0.60 * notional_bias
-    vol_bias_term = 0.35 * vol_bias
-    
-    # 放量微调
-    relvol_term = 0.0
-    if rel_vol >= cfg["relvol_hot"]:
-        relvol_term = 0.18
-    elif rel_vol <= cfg["relvol_cold"]:
-        relvol_term = -0.05
-    
-    # Call/Put 比率
-    cpr_term = 0.0
-    if cp_ratio >= cfg["callput_ratio_bull"]:
-        cpr_term = 0.30
-    elif cp_ratio <= cfg["callput_ratio_bear"]:
-        cpr_term = -0.30
-    
-    # Put 比例
-    put_term = 0.0
-    if isinstance(put_pct, (int, float)):
-        if put_pct >= cfg["putpct_bear"]:
-            put_term = -0.20
-        elif put_pct <= cfg["putpct_bull"]:
-            put_term = 0.20
+    features = features or {}
+    cfg = cfg or {}
+
+    price_chg_pct = _as_float(features.get("price_chg_pct"), 0.0)
+    rel_vol = _as_float(features.get("rel_vol_to_90d"), 1.0)
+    vol_bias = _as_float(features.get("volume_bias"), 0.0)
+    notional_bias = _as_float(features.get("notional_bias"), 0.0)
+    notional_intensity = _as_float(features.get("notional_intensity"), 0.0)
+    cp_ratio_raw = _as_float(features.get("cp_ratio"), 1.0)
+    put_pct_raw = features.get("put_pct")
+    put_pct = _as_float(put_pct_raw, 50.0)
+    spot_vol = _as_float(features.get("spot_vol_score"), 0.0)
+
+    intensity_enable = bool(cfg.get("dir_intensity_enable", True))
+    intensity_k = _as_float(cfg.get("dir_intensity_k"), 0.10)
+    cap_low = _as_float(cfg.get("dir_intensity_cap_low"), 0.80)
+    cap_high = _as_float(cfg.get("dir_intensity_cap_high"), 1.30)
+    if cap_low > cap_high:
+        cap_low, cap_high = cap_high, cap_low
+    intensity_multiplier_raw = 1.0 + intensity_k * notional_intensity
+    intensity_multiplier = (
+        max(cap_low, min(cap_high, intensity_multiplier_raw))
+        if intensity_enable
+        else 1.0
+    )
+
+    # 加法项
+    price_momentum = 0.90 * math.tanh(price_chg_pct / 1.75)
+    flow_bias_raw = 0.60 * notional_bias
+    volume_bias_raw = 0.35 * vol_bias
+    flow_bias = flow_bias_raw * intensity_multiplier
+    volume_bias = volume_bias_raw * intensity_multiplier
+
+    relvol_raw = 0.0
+    if rel_vol >= _as_float(cfg.get("relvol_hot"), 1.2):
+        relvol_raw = 0.18
+    elif rel_vol <= _as_float(cfg.get("relvol_cold"), 0.8):
+        relvol_raw = -0.05
+    relvol = relvol_raw * intensity_multiplier
+
+    cp_ratio = 0.0
+    if cp_ratio_raw >= _as_float(cfg.get("callput_ratio_bull"), 1.3):
+        cp_ratio = 0.30
+    elif cp_ratio_raw <= _as_float(cfg.get("callput_ratio_bear"), 0.77):
+        cp_ratio = -0.30
+
+    put_pct_term = 0.0
+    if _is_number(put_pct_raw):
+        if put_pct >= _as_float(cfg.get("putpct_bear"), 55.0):
+            put_pct_term = -0.20
+        elif put_pct <= _as_float(cfg.get("putpct_bull"), 45.0):
+            put_pct_term = 0.20
         else:
-            put_term = 0.20 * (50.0 - float(put_pct)) / 50.0
-    
-    score = price_term + notional_term + vol_bias_term + relvol_term + cpr_term + put_term
-    
-    # 加入价-波相关性得分
-    score += compute_spot_vol_correlation_score(rec)
-    
-    # 结构加权
-    amp = 1.0
-    if isinstance(single_leg, (int, float)) and single_leg >= cfg["singleleg_high"]:
-        amp *= 1.10
-    if isinstance(multi_leg, (int, float)) and multi_leg >= cfg["multileg_high"]:
-        amp *= 0.90
-    if isinstance(contingent, (int, float)) and contingent >= cfg["contingent_high"]:
-        amp *= 0.90
-    
-    score = float(score * amp)
-    
-    # ============ 🟩 v2.3.3: 动态 βₜ 修正 ============
-    # ✨ NEW: 只在有 OI 数据时应用修正
-    if not skip_oi:
-        active_open_ratio = compute_active_open_ratio(rec)
-        
-        # 获取动态参数（如果启用）
-        if dynamic_params and cfg.get("enable_dynamic_params", True):
-            # 使用动态 βₜ
-            beta_t = dynamic_params.get("beta_t", cfg.get("beta_base", 0.25))
-        else:
-            # 回退到 v2.3.2 固定参数
-            beta_t = cfg.get("active_open_ratio_beta", 0.5)
-        
-        # 应用连续修正公式
-        aor_capped = math.tanh(active_open_ratio * 3)  # 软截断
-        adjustment_factor = 1 + beta_t * aor_capped
-        
-        score *= adjustment_factor
+            put_pct_term = 0.20 * (50.0 - put_pct) / 50.0
+
+    base_sum = price_momentum + flow_bias + volume_bias + relvol + cp_ratio + put_pct_term + spot_vol
+
+    # 结构放大项（连续函数，避免阶跃）
+    structure_purity = features.get("structure_purity")
+    if not _is_number(structure_purity):
+        single_leg = _as_float(features.get("single_leg_pct"), 0.0)
+        multi_leg = _as_float(features.get("multi_leg_pct"), 0.0)
+        contingent = _as_float(features.get("contingent_pct"), 0.0)
+        structure_purity = (single_leg - multi_leg - 0.5 * contingent) / 100.0
+    structure_purity = max(-1.0, min(1.0, _as_float(structure_purity, 0.0)))
+
+    structure_amp_base = _as_float(cfg.get("dir_structure_amp_base"), 1.0)
+    structure_amp_k = _as_float(cfg.get("dir_structure_amp_k"), 0.15)
+    structure_amp_raw = structure_amp_base + structure_amp_k * structure_purity
+    structure_amp = max(0.7, min(1.3, structure_amp_raw))
+
+    # AOR 闸门
+    skip_oi = bool(features.get("skip_oi", False))
+    active_open_ratio = _as_float(features.get("active_open_ratio"), 0.0)
+    dynamic_apply = bool(features.get("dynamic_apply", False))
+
+    if dynamic_apply:
+        beta_t = _as_float(features.get("beta_t"), _as_float(cfg.get("beta_base"), 0.25))
     else:
-        # ✨ 跳过 AOR 修正（记录日志）
-        # print(f"⏰ Skipped AOR adjustment (no OI data)")
-        pass
-    
-    return score
+        beta_t = _as_float(cfg.get("active_open_ratio_beta"), 0.5)
+
+    aor_capped = math.tanh(active_open_ratio * 3.0)
+    aor_gate = 1.0 if skip_oi else (1.0 + beta_t * aor_capped)
+
+    final_score = float(base_sum * structure_amp * aor_gate)
+
+    return {
+        "price_momentum": float(price_momentum),
+        "flow_bias_raw": float(flow_bias_raw),
+        "flow_bias": float(flow_bias),
+        "volume_bias_raw": float(volume_bias_raw),
+        "volume_bias": float(volume_bias),
+        "relvol_raw": float(relvol_raw),
+        "relvol": float(relvol),
+        "cp_ratio": float(cp_ratio),
+        "put_pct": float(put_pct_term),
+        "spot_vol": float(spot_vol),
+        "notional_intensity": float(notional_intensity),
+        "intensity_multiplier_raw": float(intensity_multiplier_raw),
+        "intensity_multiplier": float(intensity_multiplier),
+        "intensity_enable": bool(intensity_enable),
+        "base_sum": float(base_sum),
+        "structure_purity": float(structure_purity),
+        "structure_amp_base": float(structure_amp_base),
+        "structure_amp_k": float(structure_amp_k),
+        "structure_amp_raw": float(structure_amp_raw),
+        "structure_amp": float(structure_amp),
+        "aor_gate": float(aor_gate),
+        "aor_capped": float(aor_capped),
+        "beta_t": float(beta_t),
+        "skip_oi": bool(skip_oi),
+        "active_open_ratio": float(active_open_ratio),
+        "final_score": float(final_score),
+    }
 
 
-def compute_vol_score(
-    rec: Dict[str, Any],
-    cfg: Dict[str, Any],
-    ignore_earnings: bool = False,
-    dynamic_params: Optional[Dict[str, float]] = None
-) -> float:
+def compute_direction_score(features: Dict[str, Any], cfg: Dict[str, Any]) -> float:
+    """DirectionScore 总分（由 components 组合还原）。"""
+    components = compute_direction_components(features, cfg)
+    return float(components["final_score"])
+
+
+def compute_vol_components(features: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
-    波动分数计算 - v2.3.3 动态参数版本
-    
-    改进：
-    1. 支持动态 λₜ 和 αₜ 参数
-    2. 应用市场环境放大：VolScore × (1 + αₜ·λₜ)
+    VolScore 分项贡献。
+
+    总分还原公式：
+      final_score = (base_spread + term_structure) * multileg_gate * dynamic_gate
     """
-    ivr = rec.get("IVR", None)
-    ivrv = compute_ivrv(rec)
-    iv_ratio = compute_iv_ratio(rec)
-    iv30_chg = rec.get("IV30ChgPct", 0.0) or 0.0
-    hv20 = rec.get("HV20", None)
-    iv30 = rec.get("IV30", None)
-    regime = compute_regime_ratio(rec)
-    multi_leg = rec.get("MultiLegPct", None)
-    
-    # ============ 基础分数计算 ============
-    
-    # IVR 中心化
-    ivr_center = 0.0
-    if isinstance(ivr, (int, float)):
-        ivr_center = (float(ivr) - 50.0) / 50.0
-    
+    features = features or {}
+    cfg = cfg or {}
+
+    ivr_raw = features.get("ivr")
+    ivr = _as_float(ivr_raw, 50.0)
+    ivrv = _as_float(features.get("ivrv_log"), 0.0)
+    iv_ratio = _as_float(features.get("ivrv_ratio"), 1.0)
+    iv30_chg = _as_float(features.get("iv30_chg_pct"), 0.0)
+    hv20_raw = features.get("hv20")
+    iv30_raw = features.get("iv30")
+    hv20 = _as_float(hv20_raw, 0.0)
+    iv30 = _as_float(iv30_raw, 0.0)
+    regime = _as_float(features.get("regime_ratio"), 1.0)
+    multi_leg_raw = features.get("multi_leg_pct")
+    multi_leg = _as_float(multi_leg_raw, 0.0)
+
     # 卖波压力
-    sell_pressure = 1.2 * ivr_center + 1.2 * ivrv
-    
+    ivr_center = (ivr - 50.0) / 50.0 if _is_number(ivr_raw) else 0.0
+    sell_pressure_ivr = 1.2 * ivr_center
+    sell_pressure_ivrv = 1.2 * ivrv
+    sell_pressure = sell_pressure_ivr + sell_pressure_ivrv
+
     # 当日 IV 变化
-    ivchg_buy = 0.5 if iv30_chg >= cfg["iv_pop_up"] else 0.0
-    ivchg_sell = 0.5 if iv30_chg <= cfg["iv_pop_down"] else 0.0
-    
+    iv_change_buy = 0.5 if iv30_chg >= _as_float(cfg.get("iv_pop_up"), 10.0) else 0.0
+    iv_change_sell = 0.5 if iv30_chg <= _as_float(cfg.get("iv_pop_down"), -10.0) else 0.0
+
     # 折价项
-    discount_term = 0.0
-    if isinstance(hv20, (int, float)) and isinstance(iv30, (int, float)) and hv20 > 0:
-        discount_term = max(0.0, (float(hv20) - float(iv30)) / float(hv20))
-    
-    # 长便宜/短昂贵
-    longcheap = ((isinstance(ivr, (int, float)) and ivr <= cfg["iv_longcheap_rank"]) or
-                 (iv_ratio <= cfg["iv_longcheap_ratio"]))
-    shortrich = ((isinstance(ivr, (int, float)) and ivr >= cfg["iv_shortrich_rank"]) or
-                 (iv_ratio >= cfg["iv_shortrich_ratio"]))
+    discount_ratio = 0.0
+    if _is_number(hv20_raw) and _is_number(iv30_raw) and hv20 > 0:
+        discount_ratio = max(0.0, (hv20 - iv30) / hv20)
+    discount = 0.8 * discount_ratio
+
+    # 便宜/昂贵
+    longcheap = (
+        (_is_number(ivr_raw) and ivr <= _as_float(cfg.get("iv_longcheap_rank"), 30.0))
+        or (iv_ratio <= _as_float(cfg.get("iv_longcheap_ratio"), 0.95))
+    )
+    shortrich = (
+        (_is_number(ivr_raw) and ivr >= _as_float(cfg.get("iv_shortrich_rank"), 70.0))
+        or (iv_ratio >= _as_float(cfg.get("iv_shortrich_ratio"), 1.15))
+    )
     cheap_boost = 0.6 if longcheap else 0.0
     rich_pressure = 0.6 if shortrich else 0.0
-    
+
     # 财报事件
+    ignore_earnings = bool(features.get("ignore_earnings", False))
+    dte_raw = features.get("days_to_earnings")
+    dte = _as_float(dte_raw, -1.0)
     earn_boost = 0.0
-    if not ignore_earnings:
-        earn_date = parse_earnings_date(rec.get("Earnings"))
-        dte = days_until(earn_date)
-        if dte is not None and dte > 0:
-            if dte <= 2:
-                earn_boost = 0.8
-            elif dte <= 7:
-                earn_boost = 0.4
-            elif dte <= cfg["earnings_window_days"]:
-                earn_boost = 0.2
-    
+    if not ignore_earnings and _is_number(dte_raw) and dte > 0:
+        if dte <= 2:
+            earn_boost = 0.8
+        elif dte <= 7:
+            earn_boost = 0.4
+        elif dte <= _as_float(cfg.get("earnings_window_days"), 14.0):
+            earn_boost = 0.2
+
     # 恐慌环境卖波倾向
     fear_sell = 0.0
-    if (isinstance(ivr, (int, float)) and
-        ivr >= cfg["fear_ivrank_min"] and
-        iv_ratio >= cfg["fear_ivrv_ratio_min"] and
-        regime <= cfg["fear_regime_max"]):
+    if (
+        _is_number(ivr_raw)
+        and ivr >= _as_float(cfg.get("fear_ivrank_min"), 75.0)
+        and iv_ratio >= _as_float(cfg.get("fear_ivrv_ratio_min"), 1.3)
+        and regime <= _as_float(cfg.get("fear_regime_max"), 1.05)
+    ):
         fear_sell = 0.4
-    
+
     # Regime 调整
     regime_term = 0.0
-    if regime >= cfg["regime_hot"]:
+    if regime >= _as_float(cfg.get("regime_hot"), 1.2):
         regime_term = 0.2
-    elif regime <= cfg["regime_calm"]:
+    elif regime <= _as_float(cfg.get("regime_calm"), 0.8):
         regime_term = -0.2
-    
-    # 汇总
-    buy_side = 0.8 * discount_term + ivchg_buy + cheap_boost + earn_boost + regime_term
-    sell_side = sell_pressure + rich_pressure + ivchg_sell + fear_sell
-    vol_score = float(buy_side - sell_side)
 
-    # 期限结构修正
-    vol_score += compute_term_structure_adjustment(rec, cfg)
-    
-    # v2.3.2: 多腿修正
-    if isinstance(multi_leg, (int, float)) and isinstance(ivr, (int, float)):
+    buy_side = discount + iv_change_buy + cheap_boost + earn_boost + regime_term
+    sell_side = sell_pressure + rich_pressure + iv_change_sell + fear_sell
+    base_spread = buy_side - sell_side
+
+    term_structure_ratios = features.get("term_structure_ratios")
+    if not isinstance(term_structure_ratios, dict):
+        term_structure_ratios = {}
+    if not term_structure_ratios:
+        term_structure_ratios = compute_term_structure_ratios(features)
+
+    term_structure_label_code = features.get("term_structure_label_code")
+    term_structure_horizon_bias = features.get("term_structure_horizon_bias")
+    if not isinstance(term_structure_label_code, str) or not isinstance(term_structure_horizon_bias, str):
+        term_structure_meta = classify_term_structure_label(term_structure_ratios, cfg)
+        term_structure_label_code = str(term_structure_meta.get("label_code", "unknown"))
+        term_structure_horizon_bias = str(term_structure_meta.get("horizon_bias", "neutral"))
+    else:
+        term_structure_meta = {
+            "label_code": term_structure_label_code,
+            "horizon_bias": term_structure_horizon_bias,
+        }
+
+    term_structure_term = features.get("term_structure_adjustment")
+    if not _is_number(term_structure_term):
+        term_structure_term = compute_term_structure_adjustment(term_structure_meta, term_structure_ratios, cfg)
+    term_structure_term = _as_float(term_structure_term, 0.0)
+    term_structure_dte_bias = map_horizon_bias_to_dte_bias(term_structure_horizon_bias, cfg)
+
+    pre_multileg_score = base_spread + term_structure_term
+
+    multileg_gate = 1.0
+    if _is_number(multi_leg_raw) and _is_number(ivr_raw):
         if multi_leg > 40 and ivr > 70:
-            vol_score *= 0.8
+            multileg_gate = 0.8
         elif multi_leg > 40 and ivr < 30:
-            vol_score *= 0.9
-    
-    # ============ 🟩 v2.3.3: 动态市场环境调整 ============
-    
-    if dynamic_params and cfg.get("enable_dynamic_params", True):
-        lambda_t = dynamic_params.get("lambda_t", cfg.get("lambda_base", 0.45))
-        alpha_t = dynamic_params.get("alpha_t", cfg.get("alpha_base", 0.45))
-        
-        # 应用公式: VolScore × (1 + αₜ·λₜ)
-        adjustment_factor = 1 + alpha_t * lambda_t
-        vol_score *= adjustment_factor
-    
-    return vol_score
+            multileg_gate = 0.9
+
+    after_multileg = pre_multileg_score * multileg_gate
+
+    dynamic_apply = bool(features.get("dynamic_apply", False))
+    lambda_t = _as_float(features.get("lambda_t"), _as_float(cfg.get("lambda_base"), 0.45))
+    alpha_t = _as_float(features.get("alpha_t"), _as_float(cfg.get("alpha_base"), 0.45))
+    dynamic_gate = (1.0 + alpha_t * lambda_t) if dynamic_apply else 1.0
+
+    final_score = float(after_multileg * dynamic_gate)
+
+    return {
+        "discount": float(discount),
+        "iv_change_buy": float(iv_change_buy),
+        "cheap_boost": float(cheap_boost),
+        "earn_boost": float(earn_boost),
+        "regime_term": float(regime_term),
+        "buy_side": float(buy_side),
+        "sell_pressure_ivr": float(sell_pressure_ivr),
+        "sell_pressure_ivrv": float(sell_pressure_ivrv),
+        "sell_pressure": float(sell_pressure),
+        "rich_pressure": float(rich_pressure),
+        "iv_change_sell": float(iv_change_sell),
+        "fear_sell": float(fear_sell),
+        "sell_side": float(sell_side),
+        "base_spread": float(base_spread),
+        "term_structure": float(term_structure_term),
+        "term_structure_term": float(term_structure_term),
+        "term_structure_label_code": str(term_structure_label_code),
+        "term_structure_horizon_bias": str(term_structure_horizon_bias),
+        "term_structure_dte_bias": str(term_structure_dte_bias),
+        "pre_multileg_score": float(pre_multileg_score),
+        "multileg_gate": float(multileg_gate),
+        "dynamic_gate": float(dynamic_gate),
+        "lambda_t": float(lambda_t),
+        "alpha_t": float(alpha_t),
+        "dynamic_apply": bool(dynamic_apply),
+        "final_score": float(final_score),
+    }
+
+
+def compute_vol_score(features: Dict[str, Any], cfg: Dict[str, Any]) -> float:
+    """VolScore 总分（由 components 组合还原）。"""
+    components = compute_vol_components(features, cfg)
+    return float(components["final_score"])

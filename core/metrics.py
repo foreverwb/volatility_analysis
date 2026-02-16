@@ -5,7 +5,13 @@ v2.3.2 - 新增 ActiveOpenRatio, Term Structure 等
 """
 import math
 from datetime import datetime, date
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from .term_structure import (
+    classify_term_structure_label as _classify_term_structure_label_shared,
+    compute_term_structure_adjustment as _compute_term_structure_adjustment_shared,
+    compute_term_structure_ratios as _compute_term_structure_ratios_shared,
+)
 
 
 def safe_div(a: float, b: float, default: float = 0.0) -> float:
@@ -102,6 +108,126 @@ def compute_spot_vol_correlation_score(rec: Dict[str, Any]) -> float:
     return 0.0
 
 
+def _as_float(val: Any, default: float = 0.0) -> float:
+    try:
+        if isinstance(val, bool) or val is None:
+            return float(default)
+        return float(val)
+    except Exception:
+        return float(default)
+
+
+def _ramp(x: float, low: float, high: float) -> float:
+    """线性映射到 [0, 1]。"""
+    if high <= low:
+        return 1.0 if x >= high else 0.0
+    if x <= low:
+        return 0.0
+    if x >= high:
+        return 1.0
+    return (x - low) / (high - low)
+
+
+def _coalesce_value(src: Dict[str, Any], keys: Tuple[str, ...], default: Any = None) -> Any:
+    for key in keys:
+        if key in src and src.get(key) is not None:
+            return src.get(key)
+    return default
+
+
+def compute_squeeze_score(features: Dict[str, Any], cfg: Dict[str, Any]) -> Tuple[float, List[str]]:
+    """
+    连续 Gamma Squeeze 评分，返回 (score, reasons)。
+
+    评分范围: [0, 1]
+    """
+    features = features or {}
+    cfg = cfg or {}
+    reasons: List[str] = []
+
+    # 1) IV30/HV20 越低越容易挤压（0.8 以下给满分，1.2 以上为 0）
+    iv_ratio = _as_float(
+        _coalesce_value(features, ("ivrv_ratio", "iv_ratio"), compute_iv_ratio(features)),
+        1.0,
+    )
+    iv_discount_score = 1.0 - _ramp(iv_ratio, 0.8, 1.2)
+    if iv_ratio <= 0.95:
+        reasons.append("LOW_IV_VS_HV")
+
+    # 2) OI rank 越高越拥挤
+    oi_rank = _as_float(_coalesce_value(features, ("oi_pct_rank", "OI_PctRank"), 0.0), 0.0)
+    oi_score = _ramp(oi_rank, 40.0, 90.0)
+    if oi_rank >= 70.0:
+        reasons.append("HIGH_OI_RANK")
+
+    # 3) 相对成交量/强度越高越容易形成挤压链式反应
+    rel_vol = _as_float(
+        _coalesce_value(features, ("rel_vol_to_90d", "RelVolTo90D", "volume_intensity"), 1.0),
+        1.0,
+    )
+    rel_vol_score = _ramp(rel_vol, 1.0, 2.2)
+    if rel_vol >= 1.3:
+        reasons.append("HIGH_REL_VOLUME")
+
+    # 4) 价格上行且达到“异动强度”门槛
+    price_chg = _as_float(_coalesce_value(features, ("price_chg_pct", "PriceChgPct"), 0.0), 0.0)
+    price_z = _coalesce_value(features, ("price_z",), None)
+    if price_z is None:
+        price_z = price_chg / max(1e-6, _as_float(cfg.get("squeeze_price_z_scale"), 2.0))
+    price_z = _as_float(price_z, 0.0)
+    price_z_thresh = _as_float(cfg.get("squeeze_price_z_thresh"), 1.0)
+    price_move_score = 0.0
+    if price_chg > 0:
+        price_move_score = _ramp(price_chg, 0.5, 4.0) * _ramp(price_z, price_z_thresh, 2.0)
+    if price_chg >= 1.0 and price_z >= price_z_thresh:
+        reasons.append("HIGH_PRICE_MOMENTUM")
+
+    # 5) Call 偏度：名义/成交量/C-P 多维联合
+    notional_bias = _as_float(_coalesce_value(features, ("notional_bias", "flow_bias"), 0.0), 0.0)
+    volume_bias = _as_float(_coalesce_value(features, ("volume_bias",), 0.0), 0.0)
+    cp_ratio = _as_float(_coalesce_value(features, ("cp_ratio",), 1.0), 1.0)
+    call_bias_score = (
+        _ramp(notional_bias, 0.05, 0.6)
+        + _ramp(volume_bias, 0.05, 0.6)
+        + _ramp(cp_ratio, 1.0, 2.2)
+    ) / 3.0
+    if call_bias_score >= 0.55:
+        reasons.append("HIGH_CALL_BIAS")
+
+    # 6) 结构纯度：SingleLeg 高、MultiLeg/Contingent 低
+    structure_purity = _coalesce_value(features, ("structure_purity",), None)
+    if structure_purity is None:
+        single_leg = _as_float(_coalesce_value(features, ("single_leg_pct", "SingleLegPct"), 0.0), 0.0)
+        multi_leg = _as_float(_coalesce_value(features, ("multi_leg_pct", "MultiLegPct"), 0.0), 0.0)
+        contingent = _as_float(_coalesce_value(features, ("contingent_pct", "ContingentPct"), 0.0), 0.0)
+        structure_purity = (single_leg - multi_leg - 0.5 * contingent) / 100.0
+    structure_purity = max(-1.0, min(1.0, _as_float(structure_purity, 0.0)))
+    structure_score = _ramp(structure_purity, 0.1, 0.9)
+    if structure_purity >= 0.5:
+        reasons.append("CLEAN_SINGLE_LEG_STRUCTURE")
+
+    # 加权汇总
+    score = (
+        0.23 * iv_discount_score
+        + 0.20 * oi_score
+        + 0.17 * rel_vol_score
+        + 0.15 * price_move_score
+        + 0.15 * call_bias_score
+        + 0.10 * structure_score
+    )
+    score = max(0.0, min(1.0, float(score)))
+
+    # reasons 去重保序
+    deduped_reasons: List[str] = []
+    seen = set()
+    for code in reasons:
+        if code not in seen:
+            deduped_reasons.append(code)
+            seen.add(code)
+
+    return score, deduped_reasons
+
+
 def detect_squeeze_potential(rec: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
     """
     检测 Gamma Squeeze 潜力
@@ -112,24 +238,9 @@ def detect_squeeze_potential(rec: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
     - 价格启动: PriceChgPct > 1.5%
     - 显著放量: RelVolTo90D > 1.2
     """
-    iv_ratio = compute_iv_ratio(rec)
-    oi_rank = rec.get("OI_PctRank", 0.0) or 0.0
-    price_chg = rec.get("PriceChgPct", 0.0) or 0.0
-    rel_vol = rec.get("RelVolTo90D", 0.0) or 0.0
-    
-    try:
-        price_chg = float(price_chg)
-        rel_vol = float(rel_vol)
-        oi_rank = float(oi_rank)
-    except:
-        return False
-    
-    if (iv_ratio < 0.95 and
-        oi_rank > 70.0 and
-        price_chg > 1.5 and
-        rel_vol > 1.2):
-        return True
-    return False
+    score, _ = compute_squeeze_score(rec, cfg)
+    trigger = _as_float((cfg or {}).get("squeeze_score_trigger"), 0.70)
+    return bool(score >= trigger)
 
 
 def compute_active_open_ratio(rec: Dict[str, Any]) -> float:
@@ -176,48 +287,20 @@ def compute_active_open_ratio(rec: Dict[str, Any]) -> float:
 
 def compute_term_structure_ratios(rec: Dict[str, Any]) -> Dict[str, float]:
     """
-    计算期限结构比率
+    计算期限结构比率（统一实现，兼容旧键名）。
     """
-    iv7 = rec.get("IV7")
-    iv30 = rec.get("IV30")
-    iv60 = rec.get("IV60")
-    iv90 = rec.get("IV90")
-    ratios = {}
-    if isinstance(iv7, (int, float)) and isinstance(iv30, (int, float)) and iv30 > 0:
-        ratios["7_30"] = iv7 / iv30
-    if isinstance(iv30, (int, float)) and isinstance(iv60, (int, float)) and iv60 > 0:
-        ratios["30_60"] = iv30 / iv60
-    if isinstance(iv60, (int, float)) and isinstance(iv90, (int, float)) and iv90 > 0:
-        ratios["60_90"] = iv60 / iv90
-    if isinstance(iv30, (int, float)) and isinstance(iv90, (int, float)) and iv90 > 0:
-        ratios["30_90"] = iv30 / iv90
-    return ratios
+    return _compute_term_structure_ratios_shared(rec)
 
 
 def compute_term_structure_adjustment(rec: Dict[str, Any], cfg: Dict[str, Any]) -> float:
     """
-    期限结构对波动评分的修正
+    期限结构对波动评分的修正（统一实现）。
     """
     ratios = compute_term_structure_ratios(rec)
     if not ratios:
         return 0.0
-
-    short_weight = float(cfg.get("term_short_weight", 0.35))
-    mid_weight = float(cfg.get("term_mid_weight", 0.25))
-    long_weight = float(cfg.get("term_long_weight", 0.15))
-    cap = float(cfg.get("term_adjust_cap", 0.6))
-
-    adj = 0.0
-    if "7_30" in ratios:
-        adj -= short_weight * (ratios["7_30"] - 1.0)
-    if "30_60" in ratios:
-        adj -= mid_weight * (ratios["30_60"] - 1.0)
-    if "60_90" in ratios:
-        adj -= long_weight * (ratios["60_90"] - 1.0)
-    if "30_90" in ratios and "60_90" not in ratios:
-        adj -= long_weight * (ratios["30_90"] - 1.0)
-
-    return max(-cap, min(cap, adj))
+    label = _classify_term_structure_label_shared(ratios, cfg)
+    return _compute_term_structure_adjustment_shared(label, ratios, cfg)
 
 
 def compute_term_structure(rec: Dict[str, Any]) -> tuple:
@@ -228,11 +311,12 @@ def compute_term_structure(rec: Dict[str, Any]) -> tuple:
         (ratio_value, ratio_string): 数值和描述字符串
     """
     ratios = compute_term_structure_ratios(rec)
-    ratio = ratios.get("30_90")
+    ratio = ratios.get("30_90", ratios.get("iv30_iv90_ratio"))
     if ratio is None:
         return (None, "N/A")
 
-    label = _classify_term_structure(ratios)
+    label_info = _classify_term_structure_label_shared(ratios, {})
+    label = label_info.get("label", "N/A")
     ratio_str = f"{ratio:.2f}"
 
     parts = [label, ratio_str]
@@ -243,29 +327,6 @@ def compute_term_structure(rec: Dict[str, Any]) -> tuple:
     if "60_90" in ratios:
         parts.append(f"60/90 {ratios['60_90']:.2f}")
     return (ratio, " | ".join(parts))
-
-
-def _classify_term_structure(ratios: Dict[str, float]) -> str:
-    short = ratios.get("7_30")
-    mid = ratios.get("30_60")
-    long = ratios.get("60_90")
-
-    if short is None or mid is None or long is None:
-        return "N/A"
-
-    if short > 1.05 and mid > 1.05 and long > 1.05:
-        return "全面倒挂 (Full inversion)"
-    if short > 1.05 and mid <= 1.0:
-        return "短期倒挂 (Short-term inversion)"
-    if mid > 1.05 and short <= 1.02 and long <= 1.0:
-        return "中期突起 (Mid-term bulge)"
-    if long > 1.05 and mid <= 1.0:
-        return "远期过高 (Far-term elevated)"
-    if short < 0.9 and mid >= 0.95:
-        return "短期低位 (Short-term low)"
-    if short < 1.0 and mid < 1.0 and long < 1.0:
-        return "正常陡峭 (Normal steep)"
-    return "正常陡峭 (Normal steep)"
 
 
 def parse_earnings_date(s: Optional[str]) -> Optional[date]:

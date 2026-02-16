@@ -1,0 +1,185 @@
+meta:
+  version: 1
+  owner: "core"
+  notes: "Quadrant -> strategy structures and zh descriptions"
+
+quadrant_aliases:
+  偏多—买波: bull_long_vol
+  偏多—卖波: bull_short_vol
+  偏空—买波: bear_long_vol
+  偏空—卖波: bear_short_vol
+  中性/待观察: neutral_watch
+
+quadrants:
+  bull_long_vol:
+    strategy_text_zh: "看涨期权或看涨借记价差;临近事件做看涨日历/对角;IV低位或事件前可小仓位跨式"
+    risk_text_zh: "事件落空或IV回落导致时间与IV双杀;注意期限结构与滑点"
+    structures:
+      - name: long_call
+        risk_defined: false
+        direction: bull
+        vol_bias: long_vol
+        dte_hint: [14, 45]
+        delta_hint:
+          long_leg_delta: 0.55
+        description_zh: "方向与波动同时看多时的基础表达"
+      - name: bull_call_spread
+        risk_defined: true
+        direction: bull
+        vol_bias: long_vol
+        dte_hint: [21, 60]
+        delta_hint:
+          long_leg_delta: 0.50
+          short_leg_delta: 0.30
+        description_zh: "控制权利金支出，适合中等幅度上涨预期"
+      - name: call_calendar_spread
+        risk_defined: true
+        direction: bull
+        vol_bias: long_vol
+        dte_hint: [30, 75]
+        delta_hint:
+          short_leg_delta: 0.25
+          long_leg_delta: 0.40
+        description_zh: "事件前后期限错配，关注波动率回落节奏"
+
+  bull_short_vol:
+    strategy_text_zh: "卖出看跌价差/现金担保卖PUT;偏多铁鹰或备兑开仓"
+    risk_text_zh: "突发利空引发大跌;优先使用带翼结构限制尾部"
+    structures:
+      - name: bull_put_spread
+        risk_defined: true
+        direction: bull
+        vol_bias: short_vol
+        dte_hint: [21, 45]
+        delta_hint:
+          short_leg_delta: 0.25
+          long_leg_delta: 0.12
+        description_zh: "卖波主策略，优先定义风险"
+      - name: naked_short_put
+        risk_defined: false
+        direction: bull
+        vol_bias: short_vol
+        dte_hint: [14, 35]
+        delta_hint:
+          short_leg_delta: 0.20
+        description_zh: "需严格仓位与保证金管理"
+      - name: short_put_ratio
+        risk_defined: false
+        direction: bull
+        vol_bias: short_vol
+        dte_hint: [21, 45]
+        delta_hint:
+          short_leg_delta: 0.25
+          long_leg_delta: 0.10
+        description_zh: "仅适用于明确上行且可承受尾部风险"
+      - name: iron_condor
+        risk_defined: true
+        direction: neutral_to_bull
+        vol_bias: short_vol
+        dte_hint: [21, 45]
+        delta_hint:
+          short_call_delta: 0.15
+          short_put_delta: 0.20
+        description_zh: "偏多中性卖波，适合震荡上倾环境"
+
+  bear_long_vol:
+    strategy_text_zh: "看跌期权或看跌借记价差;偏空日历/对角;IV低位时可小仓位跨式"
+    risk_text_zh: "反弹或IV回落引发损耗;通过期限与delta控制theta"
+    structures:
+      - name: long_put
+        risk_defined: false
+        direction: bear
+        vol_bias: long_vol
+        dte_hint: [14, 45]
+        delta_hint:
+          long_leg_delta: 0.45
+        description_zh: "下行趋势加速场景的直接表达"
+      - name: bear_put_spread
+        risk_defined: true
+        direction: bear
+        vol_bias: long_vol
+        dte_hint: [21, 60]
+        delta_hint:
+          long_leg_delta: 0.45
+          short_leg_delta: 0.25
+        description_zh: "以较低成本获取下行收益区间"
+      - name: put_calendar_spread
+        risk_defined: true
+        direction: bear
+        vol_bias: long_vol
+        dte_hint: [30, 75]
+        delta_hint:
+          short_leg_delta: -0.25
+          long_leg_delta: -0.40
+        description_zh: "偏空日历结构，关注近月IV变化"
+
+  bear_short_vol:
+    strategy_text_zh: "看涨价差/看涨备兑;偏空铁鹰"
+    risk_text_zh: "逼空与踏空;选更远虚值并加翼防尾部"
+    structures:
+      - name: bear_call_spread
+        risk_defined: true
+        direction: bear
+        vol_bias: short_vol
+        dte_hint: [21, 45]
+        delta_hint:
+          short_leg_delta: 0.25
+          long_leg_delta: 0.12
+        description_zh: "偏空卖波首选，兼顾胜率与尾部控制"
+      - name: naked_short_call
+        risk_defined: false
+        direction: bear
+        vol_bias: short_vol
+        dte_hint: [14, 35]
+        delta_hint:
+          short_leg_delta: 0.18
+        description_zh: "风险敞口高，通常仅适用于资深交易者"
+      - name: short_call_ratio
+        risk_defined: false
+        direction: bear
+        vol_bias: short_vol
+        dte_hint: [21, 45]
+        delta_hint:
+          short_leg_delta: 0.22
+          long_leg_delta: 0.08
+        description_zh: "对反弹敏感，需动态管理"
+      - name: iron_condor
+        risk_defined: true
+        direction: neutral_to_bear
+        vol_bias: short_vol
+        dte_hint: [21, 45]
+        delta_hint:
+          short_call_delta: 0.20
+          short_put_delta: 0.15
+        description_zh: "偏空中性卖波，可结合阻力位布仓"
+
+  neutral_watch:
+    strategy_text_zh: "观望或铁鹰/蝶式等中性策略"
+    risk_text_zh: "方向不明确,建议等待更清晰信号"
+    structures:
+      - name: iron_condor
+        risk_defined: true
+        direction: neutral
+        vol_bias: short_vol
+        dte_hint: [21, 45]
+        delta_hint:
+          short_call_delta: 0.16
+          short_put_delta: 0.16
+        description_zh: "中性区间策略，依赖波动率回落与时间价值"
+      - name: broken_wing_butterfly
+        risk_defined: true
+        direction: neutral
+        vol_bias: neutral
+        dte_hint: [14, 35]
+        delta_hint:
+          body_delta: 0.20
+        description_zh: "用于等待方向明朗，控制回撤"
+      - name: short_strangle
+        risk_defined: false
+        direction: neutral
+        vol_bias: short_vol
+        dte_hint: [21, 35]
+        delta_hint:
+          short_call_delta: 0.12
+          short_put_delta: 0.12
+        description_zh: "仅在流动性与风控条件充分时考虑"

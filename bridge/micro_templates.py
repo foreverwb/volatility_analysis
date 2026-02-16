@@ -3,6 +3,12 @@ Micro 模板选择与姿态 Overlay
 """
 from typing import Any, Dict, List
 
+from core.term_structure import (
+    classify_term_structure_label,
+    compute_term_structure_ratios,
+    map_horizon_bias_to_dte_bias,
+)
+
 
 def _base_template_from_quadrant(quadrant: str) -> str:
     mapping = {
@@ -13,6 +19,35 @@ def _base_template_from_quadrant(quadrant: str) -> str:
         "中性/待观察": "neutral_watch",
     }
     return mapping.get(quadrant, "generic_micro")
+
+
+def _resolve_term_structure_profile(payload: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, str]:
+    label_code = payload.get("term_structure_label_code")
+    horizon_bias = payload.get("term_structure_horizon_bias")
+
+    if isinstance(label_code, str) and isinstance(horizon_bias, str):
+        hb = horizon_bias.lower()
+        if hb not in {"short", "mid", "long", "neutral"}:
+            hb = "neutral"
+        return {
+            "label_code": label_code,
+            "horizon_bias": hb,
+            "dte_bias": map_horizon_bias_to_dte_bias(hb, cfg),
+        }
+
+    ratios = compute_term_structure_ratios(payload)
+    if ratios:
+        label_meta = classify_term_structure_label(ratios, cfg)
+        hb = str(label_meta.get("horizon_bias", "neutral") or "neutral").lower()
+        if hb not in {"short", "mid", "long", "neutral"}:
+            hb = "neutral"
+        return {
+            "label_code": str(label_meta.get("label_code", "unknown")),
+            "horizon_bias": hb,
+            "dte_bias": map_horizon_bias_to_dte_bias(hb, cfg),
+        }
+
+    return {"label_code": "unknown", "horizon_bias": "neutral", "dte_bias": "neutral"}
 
 
 def select_micro_template(payload: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -30,6 +65,7 @@ def select_micro_template(payload: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[
     reasons = list(payload.get("permission_reasons") or [])
     disabled = set(payload.get("disabled_structures") or [])
     posture = payload.get("posture_5d")
+    term_profile = _resolve_term_structure_profile(payload, cfg)
     
     severity = {"NORMAL": 0, "ALLOW_DEFINED_RISK_ONLY": 1, "NO_TRADE": 2}
     
@@ -41,22 +77,27 @@ def select_micro_template(payload: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[
         if add_disabled:
             disabled.update(["naked_short_put", "naked_short_call", "short_strangle", "short_call_ratio", "short_put_ratio"])
     
-    dte_bias = "neutral"
+    dte_bias = term_profile["dte_bias"]
+    if term_profile["label_code"] != "unknown":
+        overlays_hit.append(f"term_structure_{term_profile['label_code']}")
     
     if posture == "TREND_CONFIRM":
         overlays_hit.append("posture_trend_confirm")
-        dte_bias = "systematic_mid_dte"
+        if dte_bias == "neutral":
+            dte_bias = "mid_term_30_60d"
         risk_overlays.append("顺势确认：保持系统化执行，关注时间止盈")
     elif posture == "COUNTERTREND":
         overlays_hit.append("posture_countertrend")
         elevate("ALLOW_DEFINED_RISK_ONLY", "POSTURE_COUNTERTREND_OVERLAY", add_disabled=True)
-        dte_bias = "shorter_defined_risk"
+        if dte_bias == "neutral":
+            dte_bias = "short_term_0_30d"
         disable_conditions_hit.append("posture_countertrend_defined_risk")
         risk_overlays.append("逆势尝试：仅定义风险，小仓位，等待确认")
     elif posture == "ONE_DAY_SHOCK":
         overlays_hit.append("posture_one_day_shock")
         elevate("ALLOW_DEFINED_RISK_ONLY", "POSTURE_ONE_DAY_SHOCK_OVERLAY", add_disabled=True)
-        dte_bias = "conservative_short_dte"
+        if dte_bias == "neutral":
+            dte_bias = "short_term_0_30d"
         disable_conditions_hit.append("posture_one_day_shock_tail_guard")
         risk_overlays.append("单日冲击：避免裸露尾部/近翼，提示易反复")
     elif posture == "CHOP":
@@ -75,4 +116,6 @@ def select_micro_template(payload: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[
         "trade_permission": permission,
         "permission_reasons": reasons,
         "disabled_structures": list(disabled),
+        "term_structure_label_code": term_profile["label_code"],
+        "term_structure_horizon_bias": term_profile["horizon_bias"],
     }
