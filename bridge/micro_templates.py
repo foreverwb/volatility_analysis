@@ -17,7 +17,11 @@ def _base_template_from_quadrant(quadrant: str) -> str:
 
 def select_micro_template(payload: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
-    在桥接层选择 micro 模板，并叠加 posture overlay
+    在桥接层选择 micro 模板。
+
+    治理模式（Phase F）：
+    - micro-template 只输出建议层字段（advisory）
+    - 不写入、不覆盖 trade_permission / disabled_structures / permission_reasons
     """
     quadrant = payload.get("quadrant")
     template = _base_template_from_quadrant(quadrant)
@@ -25,44 +29,33 @@ def select_micro_template(payload: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[
     overlays_hit: List[str] = []
     disable_conditions_hit: List[str] = []
     risk_overlays: List[str] = []
+    advisory_reason_codes: List[str] = []
     
-    permission = payload.get("trade_permission", "NORMAL")
-    reasons = list(payload.get("permission_reasons") or [])
-    disabled = set(payload.get("disabled_structures") or [])
     posture = payload.get("posture_5d")
-    
-    severity = {"NORMAL": 0, "ALLOW_DEFINED_RISK_ONLY": 1, "NO_TRADE": 2}
-    
-    def elevate(target: str, code: str, add_disabled: bool = False) -> None:
-        nonlocal permission
-        if severity.get(target, 0) > severity.get(permission, 0):
-            permission = target
-        reasons.append(code)
-        if add_disabled:
-            disabled.update(["naked_short_put", "naked_short_call", "short_strangle", "short_call_ratio", "short_put_ratio"])
     
     dte_bias = "neutral"
     
     if posture == "TREND_CONFIRM":
         overlays_hit.append("posture_trend_confirm")
         dte_bias = "systematic_mid_dte"
+        advisory_reason_codes.append("POSTURE_TREND_CONFIRM_ADVISORY")
         risk_overlays.append("顺势确认：保持系统化执行，关注时间止盈")
     elif posture == "COUNTERTREND":
         overlays_hit.append("posture_countertrend")
-        elevate("ALLOW_DEFINED_RISK_ONLY", "POSTURE_COUNTERTREND_OVERLAY", add_disabled=True)
         dte_bias = "shorter_defined_risk"
+        advisory_reason_codes.append("POSTURE_COUNTERTREND_ADVISORY")
         disable_conditions_hit.append("posture_countertrend_defined_risk")
         risk_overlays.append("逆势尝试：仅定义风险，小仓位，等待确认")
     elif posture == "ONE_DAY_SHOCK":
         overlays_hit.append("posture_one_day_shock")
-        elevate("ALLOW_DEFINED_RISK_ONLY", "POSTURE_ONE_DAY_SHOCK_OVERLAY", add_disabled=True)
         dte_bias = "conservative_short_dte"
+        advisory_reason_codes.append("POSTURE_ONE_DAY_SHOCK_ADVISORY")
         disable_conditions_hit.append("posture_one_day_shock_tail_guard")
         risk_overlays.append("单日冲击：避免裸露尾部/近翼，提示易反复")
     elif posture == "CHOP":
         overlays_hit.append("posture_chop")
-        elevate("NO_TRADE", "POSTURE_CHOP_OVERLAY", add_disabled=True)
         dte_bias = "wait_and_see"
+        advisory_reason_codes.append("POSTURE_CHOP_ADVISORY")
         disable_conditions_hit.append("posture_chop_watchlist")
         risk_overlays.append("震荡/混沌：默认观望，等待方向或期限结构改善")
     
@@ -72,7 +65,7 @@ def select_micro_template(payload: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[
         "risk_overlays": risk_overlays,
         "overlays_hit": overlays_hit,
         "disable_conditions_hit": disable_conditions_hit,
-        "trade_permission": permission,
-        "permission_reasons": reasons,
-        "disabled_structures": list(disabled),
+        "advisory_reason_codes": advisory_reason_codes,
+        "governance_mode": "ADVISORY_ONLY",
+        "permission_impact": "none",
     }

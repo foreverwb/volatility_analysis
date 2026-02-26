@@ -48,10 +48,17 @@ class RollingCache:
                 "values": [],
                 "timestamps": []
             },
+            "regimes": {        # 高层 regime 历史（v2.4）
+                "symbols": {},
+                "market": {
+                    "market_regime": [],
+                    "timestamps": []
+                }
+            },
             "params": {},       # 动态参数 EMA 历史
             "meta": {
                 "last_update": None,
-                "version": "2.3.3"
+                "version": "2.4.0"
             }
         }
     
@@ -270,6 +277,30 @@ class RollingCache:
             start_idx = valid_indices[0]
             vix_data["values"] = vix_data["values"][start_idx:]
             vix_data["timestamps"] = vix_data["timestamps"][start_idx:]
+
+        # 清理 regime 数据
+        regimes = self.data.get("regimes", {})
+        symbol_regimes = regimes.get("symbols", {})
+        for symbol in list(symbol_regimes.keys()):
+            data = symbol_regimes[symbol]
+            timestamps = data.get("timestamps", [])
+            valid_indices = [i for i, ts in enumerate(timestamps) if ts >= cutoff_str]
+            if not valid_indices:
+                del symbol_regimes[symbol]
+                continue
+            start_idx = valid_indices[0]
+            for key in ["flow_imbalance_regime", "vol_regime", "timestamps"]:
+                if isinstance(data.get(key), list):
+                    data[key] = data[key][start_idx:]
+
+        market_regimes = regimes.get("market", {})
+        market_ts = market_regimes.get("timestamps", [])
+        valid_indices = [i for i, ts in enumerate(market_ts) if ts >= cutoff_str]
+        if valid_indices:
+            start_idx = valid_indices[0]
+            if isinstance(market_regimes.get("market_regime"), list):
+                market_regimes["market_regime"] = market_regimes["market_regime"][start_idx:]
+            market_regimes["timestamps"] = market_regimes["timestamps"][start_idx:]
     
     def export_to_dict(self) -> Dict:
         """导出完整缓存数据"""
@@ -330,15 +361,53 @@ def update_cache_with_record(
     cache.update_vix_data(vix_value, timestamp)
     
     # 更新参数 EMA（符号级别）
+    state_updates = dynamic_params.get("state_updates", {}) or {}
     cache.update_param_ema(symbol, {
         "beta_t": dynamic_params.get("beta_t"),
-        "lambda_t": dynamic_params.get("lambda_t")
+        "lambda_t": dynamic_params.get("lambda_t"),
+        "beta_t_edge_hits": state_updates.get("beta_t_edge_hits"),
+        "lambda_t_edge_hits": state_updates.get("lambda_t_edge_hits"),
     })
     
     # 更新参数 EMA（全局级别）
     cache.update_param_ema("_global", {
-        "alpha_t": dynamic_params.get("alpha_t")
+        "alpha_t": dynamic_params.get("alpha_t"),
+        "alpha_t_edge_hits": state_updates.get("alpha_t_edge_hits"),
     })
+
+    # 更新 regime 历史（v2.4）
+    inputs_snapshot = dynamic_params.get("inputs_snapshot", {}) or {}
+    regimes = inputs_snapshot.get("regimes", {}) or {}
+
+    if "regimes" not in cache.data:
+        cache.data["regimes"] = {"symbols": {}, "market": {"market_regime": [], "timestamps": []}}
+
+    symbol_regimes = cache.data["regimes"].setdefault("symbols", {}).setdefault(symbol, {
+        "flow_imbalance_regime": [],
+        "vol_regime": [],
+        "timestamps": [],
+    })
+    market_regimes = cache.data["regimes"].setdefault("market", {"market_regime": [], "timestamps": []})
+
+    def append_capped(bucket: Dict[str, Any], key: str, value: Any, max_window: int) -> None:
+        if not isinstance(bucket.get(key), list):
+            bucket[key] = []
+        bucket[key].append(value)
+        if len(bucket[key]) > max_window:
+            bucket[key] = bucket[key][-max_window:]
+
+    flow_regime = regimes.get("flow_imbalance_regime")
+    vol_regime = regimes.get("vol_regime")
+    market_regime = regimes.get("market_regime")
+
+    if isinstance(flow_regime, (int, float)) and isinstance(vol_regime, (int, float)):
+        append_capped(symbol_regimes, "flow_imbalance_regime", float(flow_regime), 60)
+        append_capped(symbol_regimes, "vol_regime", float(vol_regime), 60)
+        append_capped(symbol_regimes, "timestamps", timestamp, 60)
+
+    if isinstance(market_regime, (int, float)):
+        append_capped(market_regimes, "market_regime", float(market_regime), 60)
+        append_capped(market_regimes, "timestamps", timestamp, 60)
     
     # 更新元数据
     cache.data["meta"]["last_update"] = timestamp

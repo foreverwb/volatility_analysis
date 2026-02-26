@@ -4,11 +4,12 @@ Futu OpenAPI IV 期限结构计算
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 import os
 import time
 
 from futu import OpenQuoteContext, OptionType, RET_OK
+from .futu_oi import load_oi_cache, compute_delta_oi_windows, format_delta_oi
 
 
 @dataclass
@@ -60,14 +61,17 @@ def estimate_iv_fetch_time(
     return max(chain_batches, snapshot_batches) * 30.0
 
 
-def fetch_iv_terms(
+def iter_iv_terms(
     symbols: Iterable[str],
     max_days: int = 120,
     window_days: int = 30,
     max_retries: int = 2
-) -> Dict[str, IVTermResult]:
+) -> Iterator[Tuple[int, int, str, IVTermResult]]:
     """
-    批量获取 IV7/IV30/IV60/IV90
+    逐标的获取 IV7/IV30/IV60/IV90，返回迭代进度。
+
+    Yields:
+        (completed, total, symbol, iv_result)
     """
     host = os.getenv("FUTU_HOST", "127.0.0.1")
     port = int(os.getenv("FUTU_PORT", "11111"))
@@ -77,13 +81,15 @@ def fetch_iv_terms(
     chain_limiter = RateLimiter(max_calls=10, period_seconds=30)
     snapshot_limiter = RateLimiter(max_calls=60, period_seconds=30)
 
-    results: Dict[str, IVTermResult] = {}
     symbols_list = list(symbols)
     total = len(symbols_list)
     start_ts = time.time()
+    oi_cache = load_oi_cache()
+    success_count = 0
 
     try:
         for idx, symbol in enumerate(symbols_list, start=1):
+            result: IVTermResult
             try:
                 result = _fetch_symbol_iv_terms_with_retry(
                     symbol=symbol,
@@ -95,26 +101,64 @@ def fetch_iv_terms(
                     window_days=window_days,
                     max_retries=max_retries
                 )
-                results[symbol] = result
-                progress = f"[{idx}/{total}]"
-                print(
-                    f"✓ {progress} {symbol}: IV7={_fmt_iv(result.iv7)} "
-                    f"IV30={_fmt_iv(result.iv30)} IV60={_fmt_iv(result.iv60)} "
-                    f"IV90={_fmt_iv(result.iv90)}"
-                )
             except Exception as exc:
                 print(f"❌ {symbol}: IV 计算失败: {exc}")
-                results[symbol] = IVTermResult()
+                result = IVTermResult()
+
+            if (
+                result.iv7 is not None
+                or result.iv30 is not None
+                or result.iv60 is not None
+                or result.iv90 is not None
+            ):
+                success_count += 1
+
+            symbol_cache = oi_cache.get(symbol) or oi_cache.get(symbol.upper()) or {}
+            delta_oi_1d, delta_oi_3d, delta_oi_5d = compute_delta_oi_windows(
+                result.total_oi,
+                symbol_cache,
+            )
+            progress = f"[{idx}/{total}]"
+            print(
+                f"✓ {progress} {symbol}\n"
+                f"│\n"
+                f"├─● IV（隐含波动率）\n"
+                f"│   ├─ 7D   → {_fmt_iv_pct(result.iv7)}\n"
+                f"│   ├─ 30D  → {_fmt_iv_pct(result.iv30)}\n"
+                f"│   ├─ 60D  → {_fmt_iv_pct(result.iv60)}\n"
+                f"│   └─ 90D  → {_fmt_iv_pct(result.iv90)}\n"
+                f"│\n"
+                f"└─● ΔOI（未平仓量变化）\n"
+                f"    ├─ 1D   → {format_delta_oi(delta_oi_1d)}\n"
+                f"    ├─ 3D   → {format_delta_oi(delta_oi_3d)}\n"
+                f"    └─ 5D   → {format_delta_oi(delta_oi_5d)}"
+            )
+            yield idx, total, symbol, result
     finally:
         quote_ctx.close()
 
     elapsed = time.time() - start_ts
     elapsed_minutes = elapsed / 60.0
-    success = sum(
-        1 for v in results.values()
-        if v.iv7 is not None or v.iv30 is not None or v.iv60 is not None or v.iv90 is not None
-    )
-    print(f"✓ {success}/{total} successful in {elapsed_minutes:.1f}m")
+    print(f"✓ {success_count}/{total} successful in {elapsed_minutes:.1f}m")
+
+
+def fetch_iv_terms(
+    symbols: Iterable[str],
+    max_days: int = 120,
+    window_days: int = 30,
+    max_retries: int = 2
+) -> Dict[str, IVTermResult]:
+    """
+    批量获取 IV7/IV30/IV60/IV90
+    """
+    results: Dict[str, IVTermResult] = {}
+    for _, _, symbol, result in iter_iv_terms(
+        symbols=symbols,
+        max_days=max_days,
+        window_days=window_days,
+        max_retries=max_retries,
+    ):
+        results[symbol] = result
     return results
 
 
@@ -470,3 +514,9 @@ def _fmt_iv(value: Optional[float]) -> str:
     if value is None:
         return "N/A"
     return f"{value:.2f}"
+
+
+def _fmt_iv_pct(value: Optional[float]) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.2f}%"

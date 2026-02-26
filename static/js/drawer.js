@@ -93,6 +93,13 @@ function formatIvValue(value) {
     return num.toFixed(2);
 }
 
+function formatMaybeNumber(value, digits) {
+    if (value === null || value === undefined) return 'N/A';
+    var num = Number(value);
+    if (isNaN(num)) return 'N/A';
+    return num.toFixed(digits);
+}
+
 function showDrawer(timestamp, symbol) {
     var record = AppState.allRecords.find(function(r) {
         return r.timestamp === timestamp && r.symbol === symbol;
@@ -128,6 +135,8 @@ function showDrawer(timestamp, symbol) {
     // 🟩 v2.3.3: 动态参数
     var dynamicParams = record.dynamic_params || {};
     var hasDynamicParams = dynamicParams.enabled && dynamicParams.beta_t !== null;
+    var scoreBreakdown = record.score_breakdown || {};
+    var confidenceBreakdown = record.confidence_breakdown || {};
     
     var dirScore = record.direction_score;
     var volScore = record.vol_score;
@@ -155,7 +164,7 @@ function showDrawer(timestamp, symbol) {
     
     html += '<div class="detail-row"><div class="detail-label">方向评分:</div><div class="detail-value" style="color: ' + dirColor + '; font-weight: bold;">' + record.direction_score + ' (' + record.direction_bias + ')</div></div>';
     html += '<div class="detail-row"><div class="detail-label">波动评分:</div><div class="detail-value" style="color: ' + volColor + '; font-weight: bold;">' + record.vol_score + ' (' + record.vol_bias + ')</div></div></div>';
-    
+
     // ========== 🟩 v2.3.3: 动态参数区块 ==========
     if (hasDynamicParams) {
         html += '<div class="detail-section"><h3>🎛️ 动态参数</h3>';
@@ -209,12 +218,37 @@ function showDrawer(timestamp, symbol) {
     // ========== 衍生指标区块 ==========
     html += '<div class="detail-section"><h3>衍生指标</h3>';
     if (record.derived_metrics) {
-        html += '<div class="detail-row"><div class="detail-label">IVRV 比值:</div><div class="detail-value">' + record.derived_metrics.ivrv_ratio + '</div></div>';
-        html += '<div class="detail-row"><div class="detail-label">IVRV 差值:</div><div class="detail-value">' + record.derived_metrics.ivrv_diff + '</div></div>';
-        html += '<div class="detail-row"><div class="detail-label">Call/Put 比值:</div><div class="detail-value">' + record.derived_metrics.cp_ratio + '</div></div>';
-        html += '<div class="detail-row"><div class="detail-label">Regime 比值:</div><div class="detail-value">' + record.derived_metrics.regime_ratio + '</div></div>';
+        html += '<div class="detail-row"><div class="detail-label">IVRV 比值:</div><div class="detail-value">' + formatMaybeNumber(record.derived_metrics.ivrv_ratio, 3) + '</div></div>';
+        html += '<div class="detail-row"><div class="detail-label">IVRV 差值:</div><div class="detail-value">' + formatMaybeNumber(record.derived_metrics.ivrv_diff, 2) + '</div></div>';
+        html += '<div class="detail-row"><div class="detail-label">Call/Put 比值:</div><div class="detail-value">' + formatMaybeNumber(record.derived_metrics.cp_ratio, 3) + '</div></div>';
+        html += '<div class="detail-row"><div class="detail-label">Regime 比值:</div><div class="detail-value">' + formatMaybeNumber(record.derived_metrics.regime_ratio, 3) + '</div></div>';
     }
     html += '</div>';
+
+    // ========== v2.4: 评分与置信度分解（审计关键字段） ==========
+    if (scoreBreakdown && (scoreBreakdown.direction || scoreBreakdown.volatility)) {
+        var dirNorm = scoreBreakdown.direction ? scoreBreakdown.direction.normalized_score : null;
+        var volNorm = scoreBreakdown.volatility ? scoreBreakdown.volatility.normalized_score : null;
+        var dirAdj = scoreBreakdown.direction && scoreBreakdown.direction.adjustment ? scoreBreakdown.direction.adjustment.factor : null;
+        var volAdj = scoreBreakdown.volatility && scoreBreakdown.volatility.adjustment ? scoreBreakdown.volatility.adjustment.factor : null;
+        html += '<div class="detail-section"><h3>评分分解 (score_breakdown)</h3>';
+        html += '<div class="detail-row"><div class="detail-label">方向基础分:</div><div class="detail-value">' + formatMaybeNumber(dirNorm, 3) + '</div></div>';
+        html += '<div class="detail-row"><div class="detail-label">方向调整系数:</div><div class="detail-value">' + formatMaybeNumber(dirAdj, 3) + '</div></div>';
+        html += '<div class="detail-row"><div class="detail-label">波动基础分:</div><div class="detail-value">' + formatMaybeNumber(volNorm, 3) + '</div></div>';
+        html += '<div class="detail-row"><div class="detail-label">波动调整系数:</div><div class="detail-value">' + formatMaybeNumber(volAdj, 3) + '</div></div>';
+        html += '</div>';
+    }
+
+    if (confidenceBreakdown && confidenceBreakdown.components) {
+        var comps = confidenceBreakdown.components;
+        html += '<div class="detail-section"><h3>置信度分解 (confidence_breakdown)</h3>';
+        html += '<div class="detail-row"><div class="detail-label">总置信度:</div><div class="detail-value">' + (confidenceBreakdown.confidence_label || record.confidence || 'N/A') + ' (' + formatMaybeNumber(confidenceBreakdown.confidence_score, 3) + ')</div></div>';
+        html += '<div class="detail-row"><div class="detail-label">数据置信度:</div><div class="detail-value">' + (confidenceBreakdown.data_confidence || 'N/A') + '</div></div>';
+        html += '<div class="detail-row"><div class="detail-label">strength:</div><div class="detail-value">' + formatMaybeNumber(comps.strength_confidence && comps.strength_confidence.score, 3) + '</div></div>';
+        html += '<div class="detail-row"><div class="detail-label">execution:</div><div class="detail-value">' + formatMaybeNumber(comps.execution_confidence && comps.execution_confidence.score, 3) + '</div></div>';
+        html += '<div class="detail-row"><div class="detail-label">consistency:</div><div class="detail-value">' + formatMaybeNumber(comps.consistency_confidence && comps.consistency_confidence.score, 3) + '</div></div>';
+        html += '</div>';
+    }
     
     // ========== 方向驱动因素区块 ==========
     html += '<div class="detail-section"><h3>方向驱动因素</h3><ul class="factor-list">';

@@ -150,6 +150,12 @@ function renderRecordsList() {
             } else if (activeOpenRatio <= -0.05) {
                 aorBadge = '<span class="badge-aor-bear">📉 平仓</span>';
             }
+
+            // v2.4: 数据缺失标记
+            var missingCount = Array.isArray(record.missing_features) ? record.missing_features.length : 0;
+            var missingBadge = missingCount > 0
+                ? '<span style="display:inline-block;margin-left:4px;padding:1px 6px;border-radius:10px;background:#fff3e0;color:#ad6800;font-size:11px;">缺失:' + missingCount + '</span>'
+                : '';
             
             //  新增: 跨期一致性标记
             var consistency = record.consistency || 0;
@@ -180,7 +186,7 @@ function renderRecordsList() {
 
             html += '<div class="record-item" data-timestamp="' + record.timestamp + '" data-symbol="' + record.symbol + '">';
             html += '<div class="record-info">';
-            html += '<div class="record-symbol">' + record.symbol + eventBadge + typeBadge + squeezeBadge + aorBadge + consistencyBadge + slopeBadge + '</div>';
+            html += '<div class="record-symbol">' + record.symbol + eventBadge + typeBadge + squeezeBadge + aorBadge + consistencyBadge + slopeBadge + missingBadge + '</div>';
             html += '<div class="record-meta">';
             html += '<span class="record-quadrant ' + quadrantClass + '">' + record.quadrant + '</span>';
             html += '<span class="record-confidence">置信度: <span class="badge ' + confidenceBadge + '">' + record.confidence + '</span></span>';

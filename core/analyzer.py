@@ -3,7 +3,7 @@
 ✨ NEW: 支持时间限制跳过 OI 数据
 """
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from .config import DEFAULT_CFG, INDEX_TICKERS, get_dynamic_thresholds
 from .cleaning import clean_record, normalize_dataset
@@ -28,6 +28,9 @@ from .dynamic_params import compute_all_dynamic_params, validate_dynamic_params
 from bridge.builders import build_bridge_snapshot
 from bridge.micro_templates import select_micro_template
 
+CRITICAL_MISSING_FEATURES = {"IV30", "HV20", "HV1Y", "IVR", "VIX"}
+OI_UNAVAILABLE_REASON_CODES = {"SKIP_OI", "INSUFFICIENT_OI_HISTORY", "MISSING_OI_INPUTS"}
+
 
 def _count_valid_points(scores: Optional[List[float]], n_days: int) -> int:
     if not scores or n_days <= 0:
@@ -44,6 +47,64 @@ def _count_valid_points(scores: Optional[List[float]], n_days: int) -> int:
         if valid >= n_days:
             break
     return valid
+
+
+def _safe_round(value: Optional[float], digits: int) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return round(float(value), digits)
+    return None
+
+
+def _is_numeric(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _mark_critical_missing(missing_features: Set[str], *feature_names: str) -> None:
+    for feature_name in feature_names:
+        if feature_name in CRITICAL_MISSING_FEATURES:
+            missing_features.add(feature_name)
+
+
+def _collect_missing_features(
+    normed: Dict[str, Any],
+    vix_value: Optional[float],
+) -> Set[str]:
+    missing: Set[str] = set()
+    for key in sorted(CRITICAL_MISSING_FEATURES - {"VIX"}):
+        if not _is_numeric(normed.get(key)):
+            missing.add(key)
+    if not _is_numeric(vix_value):
+        missing.add("VIX")
+    return missing
+
+
+def _resolve_oi_unavailable_reason(
+    raw_data: Dict[str, Any],
+    normed: Dict[str, Any],
+    skip_oi: bool,
+) -> Optional[str]:
+    if skip_oi:
+        return "SKIP_OI"
+
+    explicit_reason = raw_data.get("oi_unavailable_reason") or normed.get("oi_unavailable_reason")
+    if explicit_reason in OI_UNAVAILABLE_REASON_CODES:
+        return explicit_reason
+
+    delta_oi = normed.get("ΔOI_1D")
+    if delta_oi is None and "DeltaOI_1D" in normed:
+        delta_oi = normed.get("DeltaOI_1D")
+    if _is_numeric(delta_oi):
+        return None
+
+    current_oi = raw_data.get("current_oi")
+    if current_oi is None:
+        current_oi = raw_data.get("CurrentOI")
+    if current_oi is None:
+        current_oi = raw_data.get("oi_current")
+
+    if raw_data.get("oi_current_available") is True or _is_numeric(current_oi):
+        return "INSUFFICIENT_OI_HISTORY"
+    return "MISSING_OI_INPUTS"
 
 
 def calculate_analysis(
@@ -90,11 +151,13 @@ def calculate_analysis(
         vix_value = get_vix_with_fallback(
             default=effective_cfg.get("vix_fallback_value", 18.0)
         )
+    missing_features = _collect_missing_features(normed, vix_value)
+    unavailable_metrics: Set[str] = set()
     
     # ============ 动态参数计算 ============
     dynamic_params = None
     
-    if effective_cfg.get("enable_dynamic_params", True):
+    if effective_cfg.get("enable_dynamic_params", False):
         try:
             cache = get_global_cache()
             history_cache = cache.get_data()
@@ -121,58 +184,83 @@ def calculate_analysis(
     term_ratios = compute_term_structure_ratios(normed)
     fear_flag, fear_reasons = detect_fear_regime(normed, term_structure_str, vix_value, effective_cfg)
     
-    # ✨ NEW: 条件计算 ActiveOpenRatio
-    if skip_oi:
-        active_open_ratio = 0.0  # 跳过 OI 时设为 0
-    else:
+    # ✨ NEW: OI 数据治理（关键缺失与不可用派生解耦）
+    oi_unavailable_reason = _resolve_oi_unavailable_reason(data, normed, skip_oi)
+    oi_data_available = oi_unavailable_reason is None
+    if oi_data_available:
         active_open_ratio = compute_active_open_ratio(normed)
+    else:
+        active_open_ratio = None
+        unavailable_metrics.add("ΔOI_1D")
     
     # ============ 评分计算 ============
+    score_breakdown: Dict[str, Any] = {}
     # ✨ NEW: 传递 skip_oi 标志
+    skip_oi_for_scoring = not oi_data_available
     dir_score = compute_direction_score(
         normed, 
         effective_cfg, 
         dynamic_params=dynamic_params,
-        skip_oi=skip_oi  # ✨ 新增参数
+        skip_oi=skip_oi_for_scoring,  # OI 不可用时按可选因子跳过
+        missing_features=missing_features,
+        score_breakdown=score_breakdown,
     )
     
     vol_score = compute_vol_score(
         normed, 
         effective_cfg, 
         ignore_earnings=ignore_earnings, 
-        dynamic_params=dynamic_params
+        dynamic_params=dynamic_params,
+        missing_features=missing_features,
+        score_breakdown=score_breakdown,
     )
     
     # ============ 偏好映射 ============
-    dir_pref = map_direction_pref(dir_score)
-    vol_pref = map_vol_pref(vol_score, effective_cfg)
+    dir_pref = map_direction_pref(dir_score, effective_cfg)
+    vol_pref = map_vol_pref(vol_score, effective_cfg, use_neutral_buffer=True)
     quadrant = combine_quadrant(dir_pref, vol_pref)
     
     # ============ 流动性与置信度 ============
     liquidity = map_liquidity(normed, effective_cfg)
+    confidence_breakdown: Dict[str, Any] = {}
     confidence, structure_factor, consistency = map_confidence(
-        dir_score, vol_score, liquidity, normed, effective_cfg, history_scores
+        dir_score, vol_score, liquidity, normed, effective_cfg, history_scores,
+        data_quality=data_quality,
+        missing_features=sorted(missing_features),
+        confidence_breakdown=confidence_breakdown,
     )
-    confidence_notes = []
-    if data_quality == "LOW" and confidence != "低":
-        confidence_notes.append("数据质量LOW→置信度降级")
-        confidence = "低"
-    elif data_quality == "MED" and confidence == "高":
-        confidence_notes.append("数据质量MED→置信度降级为中")
-        confidence = "中"
+    data_confidence = confidence_breakdown.get("data_confidence", "高")
+    confidence_notes = list(confidence_breakdown.get("notes", []))
     penal_flag = penalize_extreme_move_low_vol(normed, effective_cfg)
     
+    event_tags: List[str] = []
+    if is_squeeze:
+        event_tags.append("POTENTIAL_GAMMA_SQUEEZE")
+
     # ============ 策略建议 ============
     strategy_info = get_strategy_info(quadrant, liquidity, is_squeeze=is_squeeze)
     
     # ============ 派生指标 ============
     iv30 = normed.get("IV30")
-    hv20 = normed.get("HV20", 1)
-    hv1y = normed.get("HV1Y", 1)
-    ivrv_ratio = (iv30 / hv20) if (isinstance(iv30, (int, float)) and isinstance(hv20, (int, float)) and hv20 > 0) else 1.0
-    ivrv_diff = (iv30 - hv20) if (isinstance(iv30, (int, float)) and isinstance(hv20, (int, float))) else 0.0
+    hv20 = normed.get("HV20")
+    hv1y = normed.get("HV1Y")
+    if not _is_numeric(iv30):
+        _mark_critical_missing(missing_features, "IV30")
+    if not _is_numeric(hv20):
+        _mark_critical_missing(missing_features, "HV20")
+    if not _is_numeric(hv1y):
+        _mark_critical_missing(missing_features, "HV1Y")
+
+    ivrv_ratio = None
+    if _is_numeric(iv30) and _is_numeric(hv20) and hv20 > 0:
+        ivrv_ratio = iv30 / hv20
+
+    ivrv_diff = None
+    if _is_numeric(iv30) and _is_numeric(hv20):
+        ivrv_diff = iv30 - hv20
+
     ivrv_log = compute_ivrv(normed)
-    regime_ratio = (hv20 / hv1y) if (isinstance(hv20, (int, float)) and isinstance(hv1y, (int, float)) and hv1y > 0) else 1.0
+    regime_ratio = compute_regime_ratio(normed)
     vol_bias = compute_volume_bias(normed)
     notional_bias = compute_notional_bias(normed)
     cp_ratio = compute_callput_ratio(normed)
@@ -202,11 +290,13 @@ def calculate_analysis(
     direction_factors.append(f"相对量 {normed.get('RelVolTo90D', 1.0):.2f}x")
     
     # ✨ NEW: 只在有 OI 数据时显示
-    if not skip_oi:
-        if active_open_ratio >= 0.05:
+    if oi_data_available:
+        if _is_numeric(active_open_ratio) and active_open_ratio >= 0.05:
             direction_factors.append(f"📈 主动开仓 {active_open_ratio:.3f}")
-        elif active_open_ratio <= -0.05:
+        elif _is_numeric(active_open_ratio) and active_open_ratio <= -0.05:
             direction_factors.append(f"📉 平仓信号 {active_open_ratio:.3f}")
+        elif active_open_ratio is None:
+            direction_factors.append("主动开仓比缺失")
     
     if spot_vol_score >= 0.4:
         direction_factors.append("🔥 逼空/动量 (价升波升)")
@@ -216,12 +306,25 @@ def calculate_analysis(
         direction_factors.append("📈 磨涨 (价升波降)")
     
     vol_factors = []
-    ivr = normed.get("IVR", 50)
-    vol_factors.append(f"IVR {ivr:.1f}%")
-    vol_factors.append(f"IVRV(log) {ivrv_log:.3f}")
-    vol_factors.append(f"IVRV比率 {ivrv_ratio:.2f}")
+    ivr = normed.get("IVR")
+    if isinstance(ivr, (int, float)):
+        vol_factors.append(f"IVR {ivr:.1f}%")
+    else:
+        vol_factors.append("IVR 缺失")
+        _mark_critical_missing(missing_features, "IVR")
+    if isinstance(ivrv_log, (int, float)):
+        vol_factors.append(f"IVRV(log) {ivrv_log:.3f}")
+    else:
+        vol_factors.append("IVRV(log) 缺失")
+    if isinstance(ivrv_ratio, (int, float)):
+        vol_factors.append(f"IVRV比率 {ivrv_ratio:.2f}")
+    else:
+        vol_factors.append("IVRV比率 缺失")
     vol_factors.append(f"IV变动 {normed.get('IV30ChgPct', 0):.1f}%")
-    vol_factors.append(f"Regime {regime_ratio:.2f}")
+    if isinstance(regime_ratio, (int, float)):
+        vol_factors.append(f"Regime {regime_ratio:.2f}")
+    else:
+        vol_factors.append("Regime 缺失")
     
     if days_to_earnings is not None and 0 < days_to_earnings <= 14:
         vol_factors.append(f"📅 财报 {days_to_earnings}天内")
@@ -236,38 +339,12 @@ def calculate_analysis(
         days_to_earnings=days_to_earnings,
         data_quality=data_quality,
         fear_reasons=fear_reasons,
-        cfg=effective_cfg
+        cfg=effective_cfg,
+        data_confidence=data_confidence,
+        missing_features=sorted(missing_features),
+        posture_5d=posture_info.get("posture_5d"),
     )
-    # 姿态层风险覆盖
-    posture_overlay_notes = []
-    severity_map = {"NORMAL": 0, "ALLOW_DEFINED_RISK_ONLY": 1, "NO_TRADE": 2}
-    posture_perm = permission_info["trade_permission"]
-    perm_reasons = list(permission_info["permission_reasons"])
-    disabled_structures = set(permission_info["disabled_structures"])
-    posture_tag = posture_info.get("posture_5d")
-    
-    def elevate(target: str, code: str, add_disabled: bool = False):
-        nonlocal posture_perm
-        if severity_map.get(target, 0) > severity_map.get(posture_perm, 0):
-            posture_perm = target
-        perm_reasons.append(code)
-        if add_disabled:
-            disabled_structures.update(["naked_short_put", "naked_short_call", "short_strangle", "short_call_ratio", "short_put_ratio"])
-    
-    if posture_tag == "COUNTERTREND":
-        elevate("ALLOW_DEFINED_RISK_ONLY", "POSTURE_COUNTERTREND")
-        posture_overlay_notes.append("逆势反转：降级为定义风险")
-    elif posture_tag == "ONE_DAY_SHOCK":
-        elevate("ALLOW_DEFINED_RISK_ONLY", "POSTURE_ONE_DAY_SHOCK")
-        disabled_structures.update(["naked_short_put", "naked_short_call", "short_strangle"])
-        posture_overlay_notes.append("单日冲击：避免裸露尾部")
-    elif posture_tag == "CHOP":
-        elevate("NO_TRADE", "POSTURE_CHOP", add_disabled=True)
-        posture_overlay_notes.append("震荡/摇摆：倾向观望")
-    
-    permission_info["trade_permission"] = posture_perm
-    permission_info["permission_reasons"] = perm_reasons
-    permission_info["disabled_structures"] = list(disabled_structures)
+    posture_overlay_notes = list(permission_info.get("posture_overlay_notes", []))
     
     watch_guidance = build_watchlist_guidance(
         quadrant=quadrant,
@@ -276,7 +353,8 @@ def calculate_analysis(
         active_open_ratio=active_open_ratio,
         structure_factor=structure_factor,
         term_structure_label=term_structure_str,
-        cfg=effective_cfg
+        cfg=effective_cfg,
+        event_tags=event_tags,
     )
     
     # ============ 🟢 构建返回结果 (VIX 提升到顶层) ============
@@ -285,6 +363,7 @@ def calculate_analysis(
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'quadrant': quadrant,
         'confidence': confidence,
+        'data_confidence': data_confidence,
         'confidence_notes': confidence_notes,
         'liquidity': liquidity,
         'data_quality': data_quality,
@@ -308,7 +387,7 @@ def calculate_analysis(
         'trend_days_used': trend_days_used,
         
         # 🟢 VIX 提升到顶层 (与 IVR/IV30 等同级)
-        'vix': round(vix_value, 2) if vix_value else None,
+        'vix': _safe_round(vix_value, 2),
         
         # 🟢 清洗后的核心字段 (供 API 直接使用)
         'ivr': normed.get('IVR'),
@@ -320,14 +399,17 @@ def calculate_analysis(
         'is_index': symbol in INDEX_TICKERS,
         'spot_vol_corr_score': round(spot_vol_score, 2),
         'term_structure_ratio': term_structure_str,
+        'days_to_earnings': days_to_earnings,
         
-        'active_open_ratio': round(active_open_ratio, 4),
+        'active_open_ratio': _safe_round(active_open_ratio, 4),
         'consistency': round(consistency, 3),
         'structure_factor': round(structure_factor, 2),
         'flow_bias': round(notional_bias, 3),
         
-        # ✨ NEW: 添加 OI 状态标记
-        'oi_data_available': not skip_oi,
+        # ✨ NEW: OI 状态标记（派生不可用通道）
+        'oi_data_available': oi_data_available,
+        'oi_unavailable_reason': oi_unavailable_reason,
+        'unavailable_metrics': sorted(unavailable_metrics),
         
         # 评分
         'direction_score': round(dir_score, 3),
@@ -336,25 +418,32 @@ def calculate_analysis(
         'vol_bias': vol_pref,
         'direction_factors': direction_factors,
         'vol_factors': vol_factors,
+        'score_breakdown': score_breakdown,
+        'confidence_breakdown': confidence_breakdown,
+        'missing_features': sorted(missing_features),
+        'event_tags': event_tags,
+        'governance_version': "v2.4-phase-b",
         
         # 动态参数详情
         'dynamic_params': {
-            'enabled': effective_cfg.get("enable_dynamic_params", True),
-            'vix': round(vix_value, 2) if vix_value else None,  # 保留此字段用于兼容
+            'enabled': effective_cfg.get("enable_dynamic_params", False),
+            'vix': _safe_round(vix_value, 2),  # 保留此字段用于兼容
             'beta_t': round(dynamic_params['beta_t'], 4) if dynamic_params else None,
             'lambda_t': round(dynamic_params['lambda_t'], 4) if dynamic_params else None,
             'alpha_t': round(dynamic_params['alpha_t'], 4) if dynamic_params else None,
             'beta_t_raw': round(dynamic_params['beta_t_raw'], 4) if dynamic_params else None,
             'lambda_t_raw': round(dynamic_params['lambda_t_raw'], 4) if dynamic_params else None,
             'alpha_t_raw': round(dynamic_params['alpha_t_raw'], 4) if dynamic_params else None,
+            'inputs_snapshot': dynamic_params.get('inputs_snapshot') if dynamic_params else None,
+            'state_updates': dynamic_params.get('state_updates') if dynamic_params else None,
         },
         
         # 派生指标
         'derived_metrics': {
-            'ivrv_ratio': round(ivrv_ratio, 3),
-            'ivrv_diff': round(ivrv_diff, 2),
-            'ivrv_log': round(ivrv_log, 3),
-            'regime_ratio': round(regime_ratio, 3),
+            'ivrv_ratio': _safe_round(ivrv_ratio, 3),
+            'ivrv_diff': _safe_round(ivrv_diff, 2),
+            'ivrv_log': _safe_round(ivrv_log, 3),
+            'regime_ratio': _safe_round(regime_ratio, 3),
             'vol_bias': round(vol_bias, 3),
             'notional_bias': round(notional_bias, 3),
             'cp_ratio': round(cp_ratio, 3),
@@ -383,9 +472,14 @@ def calculate_analysis(
         'direction_bias': dir_pref,
         'vol_bias': vol_pref,
         'confidence': confidence,
+        'data_confidence': data_confidence,
         'confidence_notes': confidence_notes,
+        'confidence_breakdown': confidence_breakdown,
         'data_quality': data_quality,
         'data_quality_issues': data_quality_issues,
+        'missing_features': sorted(missing_features),
+        'unavailable_metrics': sorted(unavailable_metrics),
+        'oi_unavailable_reason': oi_unavailable_reason,
         'trade_permission': permission_info["trade_permission"],
         'permission_reasons': permission_info["permission_reasons"],
         'disabled_structures': permission_info["disabled_structures"],
@@ -399,6 +493,8 @@ def calculate_analysis(
         'penalized_extreme_move_low_vol': penal_flag,
         'fear_regime': fear_flag,
         'fear_reasons': fear_reasons,
+        'event_tags': event_tags,
+        'score_breakdown': score_breakdown,
         'watch_triggers': watch_guidance.get("watch_triggers", []),
         'what_to_monitor': watch_guidance.get("what_to_monitor", []),
         'posture_5d': posture_info.get("posture_5d"),
@@ -413,19 +509,6 @@ def calculate_analysis(
     })
     
     micro_template = select_micro_template(bridge_payload, effective_cfg)
-    
-    # 同步权限到姿态 overlay 后
-    permission_info["trade_permission"] = micro_template["trade_permission"]
-    permission_info["permission_reasons"] = micro_template["permission_reasons"]
-    permission_info["disabled_structures"] = micro_template["disabled_structures"]
-    result['trade_permission'] = permission_info["trade_permission"]
-    result['permission_reasons'] = permission_info["permission_reasons"]
-    result['disabled_structures'] = permission_info["disabled_structures"]
-    bridge_payload.update({
-        'trade_permission': permission_info["trade_permission"],
-        'permission_reasons': permission_info["permission_reasons"],
-        'disabled_structures': permission_info["disabled_structures"],
-    })
     
     bridge_snapshot = build_bridge_snapshot(bridge_payload, effective_cfg).to_dict()
     bridge_snapshot["micro_template"] = micro_template

@@ -5,7 +5,7 @@ v2.3.2 - 新增 ActiveOpenRatio, Term Structure 等
 """
 import math
 from datetime import datetime, date
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 
 def safe_div(a: float, b: float, default: float = 0.0) -> float:
@@ -14,6 +14,14 @@ def safe_div(a: float, b: float, default: float = 0.0) -> float:
         return a / b if b != 0 else default
     except:
         return default
+
+
+def _mark_missing(missing_features: Optional[Set[str]], *feature_names: str) -> None:
+    if missing_features is None:
+        return
+    for feature_name in feature_names:
+        if feature_name:
+            missing_features.add(feature_name)
 
 
 def compute_volume_bias(rec: Dict[str, Any]) -> float:
@@ -44,32 +52,44 @@ def compute_callput_ratio(rec: Dict[str, Any]) -> float:
     return safe_div(cv, pv, 1.0)
 
 
-def compute_ivrv(rec: Dict[str, Any]) -> float:
+def compute_ivrv(rec: Dict[str, Any], missing_features: Optional[Set[str]] = None) -> Optional[float]:
     """计算 IVRV (log): ln(IV30 / HV20)"""
     iv30 = rec.get("IV30")
     hv20 = rec.get("HV20")
     if not isinstance(iv30, (int, float)) or not isinstance(hv20, (int, float)):
-        return 0.0
+        if not isinstance(iv30, (int, float)):
+            _mark_missing(missing_features, "IV30")
+        if not isinstance(hv20, (int, float)):
+            _mark_missing(missing_features, "HV20")
+        return None
     if iv30 <= 0 or hv20 <= 0:
-        return 0.0
+        return None
     return math.log(iv30 / hv20)
 
 
-def compute_iv_ratio(rec: Dict[str, Any]) -> float:
+def compute_iv_ratio(rec: Dict[str, Any], missing_features: Optional[Set[str]] = None) -> Optional[float]:
     """计算 IV/HV 比率: IV30 / HV20"""
     iv30 = rec.get("IV30")
     hv20 = rec.get("HV20")
+    if not isinstance(iv30, (int, float)):
+        _mark_missing(missing_features, "IV30")
+    if not isinstance(hv20, (int, float)) or (isinstance(hv20, (int, float)) and hv20 <= 0):
+        _mark_missing(missing_features, "HV20")
     if not isinstance(iv30, (int, float)) or not isinstance(hv20, (int, float)) or hv20 <= 0:
-        return 1.0
+        return None
     return float(iv30) / float(hv20)
 
 
-def compute_regime_ratio(rec: Dict[str, Any]) -> float:
+def compute_regime_ratio(rec: Dict[str, Any], missing_features: Optional[Set[str]] = None) -> Optional[float]:
     """计算 Regime 比率: HV20 / HV1Y"""
     hv20 = rec.get("HV20")
     hv1y = rec.get("HV1Y")
+    if not isinstance(hv20, (int, float)):
+        _mark_missing(missing_features, "HV20")
+    if not isinstance(hv1y, (int, float)) or (isinstance(hv1y, (int, float)) and hv1y <= 0):
+        _mark_missing(missing_features, "HV1Y")
     if not isinstance(hv20, (int, float)) or not isinstance(hv1y, (int, float)) or hv1y <= 0:
-        return 1.0
+        return None
     return float(hv20) / float(hv1y)
 
 
@@ -124,7 +144,8 @@ def detect_squeeze_potential(rec: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
     except:
         return False
     
-    if (iv_ratio < 0.95 and
+    if (isinstance(iv_ratio, (int, float)) and
+        iv_ratio < 0.95 and
         oi_rank > 70.0 and
         price_chg > 1.5 and
         rel_vol > 1.2):
@@ -132,7 +153,7 @@ def detect_squeeze_potential(rec: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
     return False
 
 
-def compute_active_open_ratio(rec: Dict[str, Any]) -> float:
+def compute_active_open_ratio(rec: Dict[str, Any], missing_features: Optional[Set[str]] = None) -> Optional[float]:
     """
     🟩 v2.3.2 新增: 计算主动开仓比 (ActiveOpenRatio)
     ✨ NEW: 优雅处理缺失的 ΔOI 数据
@@ -146,14 +167,16 @@ def compute_active_open_ratio(rec: Dict[str, Any]) -> float:
     - ≤ -0.05 → 平仓信号
     
     Returns:
-        ActiveOpenRatio 值，如果 ΔOI 不存在返回 0.0
+        ActiveOpenRatio 值，如果 ΔOI 不存在返回 None
     """
     # ✨ NEW: 优先检查 ΔOI 是否存在
-    delta_oi = rec.get("ΔOI_1D") or rec.get("DeltaOI_1D")
+    delta_oi = rec.get("ΔOI_1D")
+    if delta_oi is None and "DeltaOI_1D" in rec:
+        delta_oi = rec.get("DeltaOI_1D")
     
-    # ✨ 如果 ΔOI 不存在或为 None，返回 0.0（而非报错）
+    # ✨ 如果 ΔOI 不存在或为 None，返回 None（缺失状态）
     if delta_oi is None:
-        return 0.0
+        return None
     
     # 优先使用 Volume 字段，否则用 CallVolume + PutVolume
     volume = rec.get("Volume")
@@ -163,13 +186,13 @@ def compute_active_open_ratio(rec: Dict[str, Any]) -> float:
         volume = call_vol + put_vol
     
     if volume == 0:
-        volume = 1  # 防止除零
+        return None
     
     try:
         delta_oi = float(delta_oi)
         volume = float(volume)
     except:
-        return 0.0
+        return None
     
     return safe_div(delta_oi, volume, 0.0)
 

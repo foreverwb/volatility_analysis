@@ -23,7 +23,7 @@ from core import (
     compute_linear_slope,
     map_slope_trend,
 )
-from core.futu_iv import fetch_iv_terms, estimate_iv_fetch_time
+from core.futu_iv import fetch_iv_terms, iter_iv_terms, estimate_iv_fetch_time
 from core.futu_oi import batch_compute_delta_oi
 app = Flask(__name__)
 records_repo = get_records_repo()
@@ -348,6 +348,11 @@ def analyze():
                     current_oi, delta_oi = oi_data[symbol]
                     if delta_oi is not None:
                         record['ΔOI_1D'] = delta_oi
+                    else:
+                        record['oi_current_available'] = current_oi is not None
+                        record['oi_unavailable_reason'] = (
+                            'INSUFFICIENT_OI_HISTORY' if current_oi is not None else 'MISSING_OI_INPUTS'
+                        )
                         
                 # 获取历史评分用于跨期一致性计算与斜率叠加
                 history_series = get_history_series(symbol, days=DEFAULT_CFG.get("trend_days", 5))
@@ -528,7 +533,16 @@ def analyze_stream():
                 print(f"   - 标的数量: {num_symbols}")
                 print(f"   - 预计耗时: {iv_estimated_minutes:.1f} 分钟")
                 print(f"{'='*60}\n")
-                iv_data = fetch_iv_terms(symbols)
+                for completed, total, symbol, iv_result in iter_iv_terms(symbols):
+                    iv_data[symbol] = iv_result
+                    iv_progress = {
+                        'type': 'iv_progress',
+                        'completed': completed,
+                        'total': total,
+                        'symbol': symbol,
+                        'percentage': round(100 * completed / total, 1) if total else 100.0,
+                    }
+                    yield f"data: {json.dumps(iv_progress)}\n\n"
 
             if skip_oi:
                 # ✨ 跳过 OI 获取
@@ -576,6 +590,11 @@ def analyze_stream():
                         current_oi, delta_oi = oi_data[symbol]
                         if delta_oi is not None:
                             record['ΔOI_1D'] = delta_oi
+                        else:
+                            record['oi_current_available'] = current_oi is not None
+                            record['oi_unavailable_reason'] = (
+                                'INSUFFICIENT_OI_HISTORY' if current_oi is not None else 'MISSING_OI_INPUTS'
+                            )
                     
                     # 获取历史评分
                     history_scores = get_history_scores(symbol)

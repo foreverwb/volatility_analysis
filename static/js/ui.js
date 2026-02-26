@@ -122,11 +122,16 @@ function hideLoading() {
  */
 function updateLoadingProgress(current, total, text) {
     var progressCurrent = document.getElementById('progressCurrent');
+    var progressTotal = document.getElementById('progressTotal');
     var progressFill = document.getElementById('progressFill');
     var loadingText = document.getElementById('loadingText');
     
     if (progressCurrent) {
         progressCurrent.textContent = current;
+    }
+
+    if (progressTotal && typeof total === 'number' && total >= 0) {
+        progressTotal.textContent = total;
     }
     
     if (progressFill && total > 0) {

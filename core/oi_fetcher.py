@@ -10,11 +10,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import time
-import threading
 from queue import Queue, Empty
 
-OI_CACHE_FILE = "oi_cache.json"
-CACHE_LOCK = threading.Lock()  # 缓存文件锁
+from .futu_oi import (
+    OI_CACHE_TABLE,
+    clear_oi_cache as clear_oi_cache_store,
+    compute_delta_oi_windows,
+    get_oi_db_path,
+    load_oi_cache as load_oi_cache_store,
+    save_oi_cache as save_oi_cache_store,
+)
 
 # ========== 配置参数 ==========
 DEFAULT_MAX_WORKERS = 8        # 默认并发线程数
@@ -61,26 +66,13 @@ def fetch_total_oi(symbol: str, timeout: int = DEFAULT_TIMEOUT) -> Optional[int]
 
 
 def load_oi_cache() -> dict:
-    """加载 OI 缓存（线程安全）"""
-    with CACHE_LOCK:
-        if not os.path.exists(OI_CACHE_FILE):
-            return {}
-        
-        try:
-            with open(OI_CACHE_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
+    """加载 OI 缓存（SQLite 后端，兼容旧接口）。"""
+    return load_oi_cache_store()
 
 
 def save_oi_cache(cache: dict):
-    """保存 OI 缓存（线程安全）"""
-    with CACHE_LOCK:
-        try:
-            with open(OI_CACHE_FILE, 'w') as f:
-                json.dump(cache, f, indent=2)
-        except Exception as e:
-            print(f"⚠ Failed to save OI cache: {e}")
+    """保存 OI 缓存（SQLite 后端，兼容旧接口）。"""
+    save_oi_cache_store(cache)
 
 
 def get_oi_with_delta(symbol: str) -> Tuple[Optional[int], Optional[int]]:
@@ -104,30 +96,22 @@ def get_oi_with_delta(symbol: str) -> Tuple[Optional[int], Optional[int]]:
     today = datetime.now().strftime('%Y-%m-%d')
     
     # 3. 查找最近的历史数据（考虑周末/节假日）
-    symbol_cache = cache.get(symbol, {})
-    yesterday_oi = None
-    
-    for days_ago in range(1, 8):  # 最多向前查找 7 天
-        past_date = (datetime.now() - timedelta(days=days_ago)).strftime('%Y-%m-%d')
-        if past_date in symbol_cache:
-            yesterday_oi = symbol_cache[past_date]
-            break
-    
-    # 4. 计算 delta
-    delta_oi = None
-    if yesterday_oi is not None:
-        delta_oi = current_oi - yesterday_oi
+    symbol_key = symbol.upper()
+    symbol_cache = cache.get(symbol_key) or cache.get(symbol) or {}
+
+    # 4. 计算 delta（统一窗口逻辑）
+    delta_oi, _, _ = compute_delta_oi_windows(current_oi, symbol_cache)
     
     # 5. 更新缓存（线程安全）
-    if symbol not in cache:
-        cache[symbol] = {}
+    if symbol_key not in cache:
+        cache[symbol_key] = {}
     
-    cache[symbol][today] = current_oi
+    cache[symbol_key][today] = current_oi
     
     # 清理超过 7 天的数据
     cutoff = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-    cache[symbol] = {
-        date: oi for date, oi in cache[symbol].items()
+    cache[symbol_key] = {
+        date: oi for date, oi in cache[symbol_key].items()
         if date >= cutoff
     }
     
@@ -321,26 +305,28 @@ def auto_tune_workers(num_symbols: int) -> int:
 def get_oi_info(symbol: str) -> dict:
     """获取 OI 数据的详细信息（用于调试）"""
     cache = load_oi_cache()
-    symbol_cache = cache.get(symbol, {})
+    symbol_key = symbol.upper()
+    symbol_cache = cache.get(symbol_key) or cache.get(symbol) or {}
     
     current_oi, delta_oi = get_oi_with_delta(symbol)
+    db_path = get_oi_db_path()
     
     return {
-        "symbol": symbol,
+        "symbol": symbol_key,
         "current_oi": current_oi,
         "delta_oi_1d": delta_oi,
         "cache_history": symbol_cache,
-        "cache_file": OI_CACHE_FILE,
-        "cache_exists": os.path.exists(OI_CACHE_FILE)
+        "cache_backend": "sqlite",
+        "cache_db_path": db_path,
+        "cache_table": OI_CACHE_TABLE,
+        "cache_exists": os.path.exists(db_path),
     }
 
 
 def clear_oi_cache():
-    """清除 OI 缓存"""
-    with CACHE_LOCK:
-        if os.path.exists(OI_CACHE_FILE):
-            os.remove(OI_CACHE_FILE)
-            print("✓ OI cache cleared")
+    """清除 OI 缓存（SQLite 表）。"""
+    clear_oi_cache_store()
+    print("✓ OI cache cleared")
 
 
 def benchmark_performance(symbols: List[str], max_workers_list: List[int] = [1, 5, 8, 10]):

@@ -67,6 +67,11 @@ DEFAULT_CFG = {
     # 惩罚阈值
     "penalty_extreme_chg": 20.0,
     "penalty_vol_pct_thresh": 0.40,
+    # ========== Phase G: 决策映射中性缓冲带 ==========
+    "direction_pref_threshold": 1.0,
+    "direction_pref_neutral_buffer": 0.15,
+    "vol_pref_neutral_buffer_ratio": 0.25,
+    "vol_pref_neutral_buffer_min": 0.05,
     
     # ========== 🟩 v2.3.2 新增配置 ==========
     
@@ -111,6 +116,33 @@ DEFAULT_CFG = {
     "watch_direction_trigger": 0.8,
     "watch_vol_trigger": 0.3,
     "fear_vix_high": 25.0,
+
+    # ========== v2.4 Phase D: 动态参数解耦与预算 ==========
+    "enable_dynamic_params": False,
+    "beta_base": 0.25,
+    "beta_min": 0.20,
+    "beta_max": 0.40,
+    "lambda_base": 0.45,
+    "lambda_min": 0.35,
+    "lambda_max": 0.55,
+    "alpha_base": 0.45,
+    "alpha_min": 0.35,
+    "alpha_max": 0.60,
+    "beta_ema_span": 10,
+    "lambda_ema_span": 10,
+    "alpha_ema_span": 20,
+    "dynamic_regime_min_samples": 8,
+    "beta_regime_gain": 0.12,
+    "lambda_regime_gain": 0.18,
+    "alpha_regime_gain": 0.16,
+    "dynamic_beta_budget": 0.25,
+    "dynamic_lambda_budget": 0.22,
+    "dynamic_alpha_budget": 0.22,
+    "dynamic_edge_epsilon": 0.01,
+    "dynamic_edge_hit_threshold": 3,
+    "dynamic_shrink_ratio": 0.35,
+    "dynamic_direction_adjustment_budget": 0.20,
+    "dynamic_vol_adjustment_budget": 0.25,
 }
 
 # 指数类标的
@@ -200,5 +232,29 @@ def validate_config(cfg: dict) -> bool:
 
     if cfg.get("trend_slope_down", 0.10) < 0:
         raise ValueError("trend_slope_down must be >= 0")
+
+    if cfg.get("direction_pref_threshold", 1.0) <= 0:
+        raise ValueError("direction_pref_threshold must be > 0")
+
+    if cfg.get("direction_pref_neutral_buffer", 0.15) < 0:
+        raise ValueError("direction_pref_neutral_buffer must be >= 0")
+
+    if cfg.get("vol_pref_neutral_buffer_ratio", 0.25) < 0:
+        raise ValueError("vol_pref_neutral_buffer_ratio must be >= 0")
+
+    if cfg.get("vol_pref_neutral_buffer_min", 0.05) < 0:
+        raise ValueError("vol_pref_neutral_buffer_min must be >= 0")
+
+    for key in ("dynamic_beta_budget", "dynamic_lambda_budget", "dynamic_alpha_budget",
+                "dynamic_direction_adjustment_budget", "dynamic_vol_adjustment_budget"):
+        val = cfg.get(key, 0.25)
+        if not (0 <= val <= 1.0):
+            raise ValueError(f"{key} must be in [0, 1.0]")
+
+    if not (0 < cfg.get("dynamic_shrink_ratio", 0.35) < 1.0):
+        raise ValueError("dynamic_shrink_ratio must be in (0, 1.0)")
+
+    if cfg.get("dynamic_edge_hit_threshold", 3) < 1:
+        raise ValueError("dynamic_edge_hit_threshold must be >= 1")
     
     return True

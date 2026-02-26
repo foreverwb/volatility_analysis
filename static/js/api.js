@@ -27,9 +27,27 @@ async function analyzeData() {
 
         // 计算标的数量
         var symbolCount = new Set(records.map(r => r.symbol)).size;
+        var progressState = {
+            totalSymbols: symbolCount,
+            hasIvStage: true,
+            ivCompleted: 0,
+            analyzeCompleted: 0
+        };
+
+        function refreshProgress(text) {
+            var current;
+            if (progressState.hasIvStage) {
+                // IV 与分析阶段各占 50%，避免第一阶段长时间显示 0。
+                current = Math.round((progressState.ivCompleted + progressState.analyzeCompleted) / 2);
+            } else {
+                current = progressState.analyzeCompleted;
+            }
+            current = Math.max(0, Math.min(progressState.totalSymbols, current));
+            updateLoadingProgress(current, progressState.totalSymbols, text);
+        }
         
         // 🟢 显示 Loading
-        showLoading('正在初始化...', symbolCount);
+        showLoading('正在初始化...', progressState.totalSymbols);
         closeInputDrawer();
         
         console.log('🚀 开始流式请求...');
@@ -53,9 +71,6 @@ async function analyzeData() {
         var reader = response.body.getReader();
         var decoder = new TextDecoder();
         var buffer = '';
-        
-        // ✨ NEW: 标记 OI 是否被跳过
-        var oiSkipped = false;
         
         // 🟢 读取流
         var loopCount = 0;
@@ -99,7 +114,24 @@ async function analyzeData() {
                     switch (data.type) {
                         case 'init':
                             console.log('✓ 初始化，总数:', data.total);
-                            updateLoadingProgress(0, data.total, '正在初始化...');
+                            if (typeof data.total === 'number' && data.total > 0) {
+                                progressState.totalSymbols = data.total;
+                            }
+                            progressState.ivCompleted = 0;
+                            progressState.analyzeCompleted = 0;
+                            refreshProgress('正在初始化...');
+                            break;
+
+                        case 'iv_progress':
+                            console.log(`📈 IV进度: ${data.completed}/${data.total} (${data.percentage}%) - ${data.symbol}`);
+                            progressState.hasIvStage = true;
+                            progressState.ivCompleted = Math.max(
+                                progressState.ivCompleted,
+                                typeof data.completed === 'number' ? data.completed : 0
+                            );
+                            refreshProgress(
+                                `正在获取 IV 数据 (${progressState.ivCompleted}/${progressState.totalSymbols})...`
+                            );
                             break;
                             
                         case 'info':
@@ -111,29 +143,17 @@ async function analyzeData() {
                             
                             // ✨ NEW: 检测 OI 跳过消息
                             if (data.message && data.message.includes('跳过 OI')) {
-                                oiSkipped = true;
-                                updateLoadingProgress(
-                                    0, 
-                                    symbolCount, 
-                                    '⏰ 当前时间早于 18:00，跳过 OI 数据获取'
-                                );
+                                progressState.hasIvStage = false;
+                                refreshProgress('⏰ 当前时间早于 18:00，跳过 OI 数据获取');
                             } else {
-                                updateLoadingProgress(
-                                    0, 
-                                    symbolCount, 
-                                    `正在获取 OI 数据（预计 ${Math.ceil(data.estimated_time)} 秒）...`
-                                );
+                                refreshProgress(`正在获取 OI 数据（预计 ${Math.ceil(data.estimated_time)} 秒）...`);
                             }
                             break;
                             
                         case 'progress':
                             // 🟢 实时更新进度
                             console.log(`📈 进度更新: ${data.completed}/${data.total} (${data.percentage}%) - ${data.symbol}`);
-                            updateLoadingProgress(
-                                data.completed, 
-                                data.total, 
-                                `正在获取 OI 数据: ${data.symbol} (${data.percentage}%)`
-                            );
+                            refreshProgress(`正在获取 OI 数据: ${data.symbol} (${data.percentage}%)`);
                             break;
                             
                         case 'oi_complete':
@@ -141,33 +161,29 @@ async function analyzeData() {
                             
                             // ✨ NEW: 根据跳过状态显示不同消息
                             if (data.skipped) {
-                                updateLoadingProgress(
-                                    symbolCount, 
-                                    symbolCount, 
-                                    '⏰ 已跳过 OI 数据，开始分析...'
-                                );
+                                refreshProgress('⏰ 已跳过 OI 数据，开始分析...');
                             } else {
-                                updateLoadingProgress(
-                                    symbolCount, 
-                                    symbolCount, 
-                                    '开始分析数据...'
-                                );
+                                refreshProgress('开始分析数据...');
                             }
                             break;
                             
                         case 'analyze_progress':
                             console.log(`📊 分析进度: ${data.completed}/${data.total}`);
-                            updateLoadingProgress(
-                                data.completed, 
-                                data.total, 
-                                `正在分析数据 (${data.completed}/${data.total})...`
+                            progressState.analyzeCompleted = Math.max(
+                                progressState.analyzeCompleted,
+                                typeof data.completed === 'number' ? data.completed : 0
+                            );
+                            refreshProgress(
+                                `正在分析数据 (${progressState.analyzeCompleted}/${progressState.totalSymbols})...`
                             );
                             break;
                             
                         case 'complete':
                             console.log('✅ 全部完成');
                             // 分析完成
-                            updateLoadingProgress(symbolCount, symbolCount, '数据处理完成');
+                            progressState.ivCompleted = progressState.totalSymbols;
+                            progressState.analyzeCompleted = progressState.totalSymbols;
+                            refreshProgress('数据处理完成');
                             
                             // 等待一小段时间让用户看到100%
                             await new Promise(resolve => setTimeout(resolve, 500));

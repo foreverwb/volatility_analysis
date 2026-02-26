@@ -188,12 +188,18 @@ def build_bridge_snapshot(rec: Dict[str, Any], cfg: Dict[str, Any]) -> BridgeSna
         "direction_bias": rec.get("direction_bias"),
         "vol_bias": rec.get("vol_bias"),
         "confidence": rec.get("confidence"),
+        "data_confidence": rec.get("data_confidence"),
         "confidence_notes": rec.get("confidence_notes"),
+        "confidence_breakdown": rec.get("confidence_breakdown"),
+        "score_breakdown": rec.get("score_breakdown"),
         "data_quality": rec.get("data_quality"),
         "data_quality_issues": rec.get("data_quality_issues"),
+        "missing_features": rec.get("missing_features"),
+        "unavailable_metrics": rec.get("unavailable_metrics"),
         "liquidity": rec.get("liquidity"),
         "active_open_ratio": _safe_float(rec.get("active_open_ratio")),
         "oi_data_available": rec.get("oi_data_available"),
+        "oi_unavailable_reason": rec.get("oi_unavailable_reason"),
         "penalized_extreme_move_low_vol": rec.get("penalized_extreme_move_low_vol"),
         "flow_bias": _safe_float(rec.get("flow_bias")),
         "trade_permission": rec.get("trade_permission"),
@@ -212,6 +218,8 @@ def build_bridge_snapshot(rec: Dict[str, Any], cfg: Dict[str, Any]) -> BridgeSna
         "trend_days_used": rec.get("trend_days_used"),
         "fear_regime": rec.get("fear_regime"),
         "fear_reasons": rec.get("fear_reasons"),
+        "event_tags": rec.get("event_tags"),
+        "governance_version": rec.get("governance_version"),
     }
 
     return BridgeSnapshot(
