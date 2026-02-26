@@ -118,20 +118,19 @@ def iter_iv_terms(
                 result.total_oi,
                 symbol_cache,
             )
-            progress = f"[{idx}/{total}]"
             print(
-                f"✓ {progress} {symbol}\n"
-                f"│\n"
-                f"├─● IV（隐含波动率）\n"
-                f"│   ├─ 7D   → {_fmt_iv_pct(result.iv7)}\n"
-                f"│   ├─ 30D  → {_fmt_iv_pct(result.iv30)}\n"
-                f"│   ├─ 60D  → {_fmt_iv_pct(result.iv60)}\n"
-                f"│   └─ 90D  → {_fmt_iv_pct(result.iv90)}\n"
-                f"│\n"
-                f"└─● ΔOI（未平仓量变化）\n"
-                f"    ├─ 1D   → {format_delta_oi(delta_oi_1d)}\n"
-                f"    ├─ 3D   → {format_delta_oi(delta_oi_3d)}\n"
-                f"    └─ 5D   → {format_delta_oi(delta_oi_5d)}"
+                _format_symbol_progress_row(
+                    index=idx,
+                    total=total,
+                    symbol=symbol,
+                    iv7=result.iv7,
+                    iv30=result.iv30,
+                    iv60=result.iv60,
+                    iv90=result.iv90,
+                    delta_oi_1d=delta_oi_1d,
+                    delta_oi_3d=delta_oi_3d,
+                    delta_oi_5d=delta_oi_5d,
+                )
             )
             yield idx, total, symbol, result
     finally:
@@ -510,13 +509,45 @@ def _variance_interpolation(
     return (var_t ** 0.5) * 100.0
 
 
+def _format_symbol_progress_row(
+    index: int,
+    total: int,
+    symbol: str,
+    iv7: Optional[float],
+    iv30: Optional[float],
+    iv60: Optional[float],
+    iv90: Optional[float],
+    delta_oi_1d: Optional[int],
+    delta_oi_3d: Optional[int],
+    delta_oi_5d: Optional[int],
+) -> str:
+    iv_row = "  ".join(
+        [
+            f"IV7={_fmt_iv(iv7)}",
+            f"IV30={_fmt_iv(iv30)}",
+            f"IV60={_fmt_iv(iv60)}",
+            f"IV90={_fmt_iv(iv90)}",
+        ]
+    )
+    oi_row = "  ".join(
+        [
+            f"ΔOI_1D={format_delta_oi(delta_oi_1d)}",
+            f"ΔOI_3D={format_delta_oi(delta_oi_3d)}",
+            f"ΔOI_5D={format_delta_oi(delta_oi_5d)}",
+        ]
+    )
+    mid_line = f"✓ [{index}/{total}] {symbol} ->"
+    branch_indent = " " * (len(mid_line) + 1)
+    return "\n".join(
+        [
+            f"{branch_indent}╭─ {iv_row}",
+            mid_line,
+            f"{branch_indent}╰─ {oi_row}",
+        ]
+    )
+
+
 def _fmt_iv(value: Optional[float]) -> str:
     if value is None:
         return "N/A"
     return f"{value:.2f}"
-
-
-def _fmt_iv_pct(value: Optional[float]) -> str:
-    if value is None:
-        return "N/A"
-    return f"{value:.2f}%"
