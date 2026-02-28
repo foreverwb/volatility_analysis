@@ -67,9 +67,10 @@ DEFAULT_CFG = {
     # 惩罚阈值
     "penalty_extreme_chg": 20.0,
     "penalty_vol_pct_thresh": 0.40,
+    "vol_pref_threshold": 0.07,  # v2.4: 波动偏好阈值（与 penalty 语义解耦）
     # ========== Phase G: 决策映射中性缓冲带 ==========
-    "direction_pref_threshold": 1.0,
-    "direction_pref_neutral_buffer": 0.15,
+    "direction_pref_threshold": 0.50,
+    "direction_pref_neutral_buffer": 0.05,
     "vol_pref_neutral_buffer_ratio": 0.25,
     "vol_pref_neutral_buffer_min": 0.05,
     
@@ -113,8 +114,8 @@ DEFAULT_CFG = {
     "posture_consistency_weak_threshold": 0.2,
     "posture_direction_strong_threshold": 1.0,
     "posture_direction_med_threshold": 0.6,
-    "watch_direction_trigger": 0.8,
-    "watch_vol_trigger": 0.3,
+    "watch_direction_trigger": 0.65,
+    "watch_vol_trigger": 0.12,
     "fear_vix_high": 25.0,
 
     # ========== v2.4 Phase D: 动态参数解耦与预算 ==========
@@ -244,6 +245,32 @@ def validate_config(cfg: dict) -> bool:
 
     if cfg.get("vol_pref_neutral_buffer_min", 0.05) < 0:
         raise ValueError("vol_pref_neutral_buffer_min must be >= 0")
+
+
+    # ---- Phase G: 映射阈值可达性约束（防止象限永远中性） ----
+    # 理论上 score ∈ [-1, 1]；若开启动态参数，则可被整体放大到 (1+budget) 倍。
+    dir_budget = float(cfg.get("dynamic_direction_adjustment_budget", 0.20)) if cfg.get("enable_dynamic_params", False) else 0.0
+    vol_budget = float(cfg.get("dynamic_vol_adjustment_budget", 0.25)) if cfg.get("enable_dynamic_params", False) else 0.0
+    dir_max = 1.0 * (1.0 + max(0.0, dir_budget))
+    vol_max = 1.0 * (1.0 + max(0.0, vol_budget))
+
+    dir_upper = float(cfg.get("direction_pref_threshold", 0.50)) + float(cfg.get("direction_pref_neutral_buffer", 0.05))
+    if dir_upper > dir_max + 1e-9:
+        raise ValueError(
+            f"direction pref upper ({dir_upper:.3f}) exceeds reachable max ({dir_max:.3f}); "
+            "mapping will collapse to neutral"
+        )
+
+    vol_th = float(cfg.get("vol_pref_threshold", cfg.get("penalty_vol_pct_thresh", 0.40)))
+    buffer_ratio = float(cfg.get("vol_pref_neutral_buffer_ratio", 0.25))
+    buffer_min = float(cfg.get("vol_pref_neutral_buffer_min", 0.05))
+    vol_buffer = max(abs(vol_th) * max(0.0, buffer_ratio), max(0.0, buffer_min))
+    vol_upper = abs(vol_th) + vol_buffer
+    if vol_upper > vol_max + 1e-9:
+        raise ValueError(
+            f"vol pref upper ({vol_upper:.3f}) exceeds reachable max ({vol_max:.3f}); "
+            "mapping will collapse to neutral"
+        )
 
     for key in ("dynamic_beta_budget", "dynamic_lambda_budget", "dynamic_alpha_budget",
                 "dynamic_direction_adjustment_budget", "dynamic_vol_adjustment_budget"):

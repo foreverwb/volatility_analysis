@@ -4,7 +4,9 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 
-DEFAULT_DB_PATH = os.environ.get("ANALYSIS_DB_PATH", os.path.join("data", "analysis_records.db"))
+_MODULE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_DEFAULT_DB_PATH = os.path.join(_MODULE_ROOT, "data", "analysis_records.db")
+DEFAULT_DB_PATH = os.environ.get("ANALYSIS_DB_PATH", _DEFAULT_DB_PATH)
 
 
 class RecordsRepository:

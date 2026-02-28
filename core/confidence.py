@@ -129,7 +129,7 @@ def _strength_confidence_component(
 ) -> Tuple[float, Dict[str, Any]]:
     dir_abs = abs(float(dir_score))
     vol_abs = abs(float(vol_score))
-    vol_threshold = float(cfg.get("penalty_vol_pct_thresh", 0.40))
+    vol_threshold = float(cfg.get("vol_pref_threshold", cfg.get("penalty_vol_pct_thresh", 0.40)))
 
     dir_strength = 1.0 if dir_abs >= 1.0 else 0.65 if dir_abs >= 0.6 else 0.35
     vol_strength = 1.0 if vol_abs >= (vol_threshold + 0.4) else 0.65 if vol_abs >= vol_threshold else 0.35

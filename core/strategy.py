@@ -38,7 +38,7 @@ def map_vol_pref(
     use_neutral_buffer: bool = True,
 ) -> str:
     """波动偏好映射（Phase G 中性缓冲带）"""
-    th = float(cfg.get("penalty_vol_pct_thresh", 0.40))
+    th = float(cfg.get("vol_pref_threshold", cfg.get("penalty_vol_pct_thresh", 0.40)))
     if use_neutral_buffer:
         buffer_ratio = _safe_float(cfg.get("vol_pref_neutral_buffer_ratio", 0.25), 0.25)
         buffer_min = _safe_float(cfg.get("vol_pref_neutral_buffer_min", 0.05), 0.05)

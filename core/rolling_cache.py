@@ -100,10 +100,16 @@ class RollingCache:
         
         # 提取当前值
         timestamp = record.get("timestamp", datetime.now().isoformat())
-        rel_vol = record.get("RelVolTo90D", 1.0) or 1.0
-        oi_rank = record.get("OI_PctRank", 50.0) or 50.0
-        iv30 = record.get("IV30", 0) or 0
-        hv20 = record.get("HV20", 0) or 0
+        rel_vol_raw = record.get("RelVolTo90D", None)
+        oi_rank_raw = record.get("OI_PctRank", None)
+        iv30_raw = record.get("IV30", None)
+        hv20_raw = record.get("HV20", None)
+
+        # v2.4 治理：不再用常数填充关键波动率字段，避免污染历史分布
+        rel_vol = float(rel_vol_raw) if isinstance(rel_vol_raw, (int, float)) else None
+        oi_rank = float(oi_rank_raw) if isinstance(oi_rank_raw, (int, float)) else None
+        iv30 = float(iv30_raw) if isinstance(iv30_raw, (int, float)) and float(iv30_raw) > 0 else None
+        hv20 = float(hv20_raw) if isinstance(hv20_raw, (int, float)) and float(hv20_raw) > 0 else None
         
         # 添加新数据
         symbol_data["RelVolTo90D"].append(rel_vol)

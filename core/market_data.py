@@ -17,6 +17,9 @@ try:
     IBKR_AVAILABLE = True
 except ImportError:
     IBKR_AVAILABLE = False
+    IB = None  # type: ignore
+    Index = None  # type: ignore
+    util = None  # type: ignore
 
 # ========== 配置常量 ==========
 VIX_CACHE_FILE = "vix_cache.json"

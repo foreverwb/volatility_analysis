@@ -338,6 +338,17 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _to_optional_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).replace(",", "").replace("%", ""))
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_term_structure_ratio(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -378,12 +389,73 @@ def _build_bridge_snapshot_for_record(record: Dict[str, Any], cfg_ref: Dict[str,
         bridge_data = dict(bridge_data)
         market_state = bridge_data.get('market_state', {}) if isinstance(bridge_data.get('market_state'), dict) else {}
         event_state = bridge_data.get('event_state', {}) if isinstance(bridge_data.get('event_state'), dict) else {}
+        bridge_data.setdefault('vix', market_state.get('vix'))
         bridge_data.setdefault('ivr', market_state.get('ivr'))
         bridge_data.setdefault('iv30', market_state.get('iv30'))
         bridge_data.setdefault('hv20', market_state.get('hv20'))
         bridge_data.setdefault('earning_date', event_state.get('earnings_date'))
 
     return bridge_data
+
+
+def _build_market_params_for_record(record: Dict[str, Any], bridge_data: Dict[str, Any]) -> Dict[str, Any]:
+    params = extract_swing_params(record)
+    market_state = bridge_data.get('market_state', {}) if isinstance(bridge_data.get('market_state'), dict) else {}
+    event_state = bridge_data.get('event_state', {}) if isinstance(bridge_data.get('event_state'), dict) else {}
+
+    vix = params.get('vix')
+    if vix is None:
+        vix = _to_optional_float(record.get('vix'))
+    if vix is None:
+        vix = _to_optional_float(bridge_data.get('vix'))
+    if vix is None:
+        vix = _to_optional_float(market_state.get('vix'))
+
+    ivr = params.get('ivr')
+    if ivr is None:
+        ivr = _to_optional_float(record.get('ivr'))
+    if ivr is None:
+        ivr = _to_optional_float(bridge_data.get('ivr'))
+    if ivr is None:
+        ivr = _to_optional_float(market_state.get('ivr'))
+
+    iv30 = params.get('iv30')
+    if iv30 is None:
+        iv30 = _to_optional_float(record.get('iv30'))
+    if iv30 is None:
+        iv30 = _to_optional_float(bridge_data.get('iv30'))
+    if iv30 is None:
+        iv30 = _to_optional_float(market_state.get('iv30'))
+
+    hv20 = params.get('hv20')
+    if hv20 is None:
+        hv20 = _to_optional_float(record.get('hv20'))
+    if hv20 is None:
+        hv20 = _to_optional_float(bridge_data.get('hv20'))
+    if hv20 is None:
+        hv20 = _to_optional_float(market_state.get('hv20'))
+
+    earning_date = (
+        params.get('earning_date')
+        or bridge_data.get('earning_date')
+        or event_state.get('earnings_date')
+        or record.get('earning_date')
+    )
+    iv_path = record.get('iv_path') or bridge_data.get('iv_path')
+
+    beta = _to_optional_float(record.get('beta'))
+    if beta is None:
+        beta = _to_optional_float(bridge_data.get('beta'))
+
+    return {
+        'vix': vix,
+        'ivr': ivr,
+        'iv30': iv30,
+        'hv20': hv20,
+        'iv_path': iv_path,
+        'earning_date': earning_date,
+        'beta': beta,
+    }
 
 
 def _build_swing_params_payload(
@@ -431,9 +503,14 @@ def _build_swing_params_payload(
 def _log_batch_request(tag: str, symbols: List[str]) -> None:
     try:
         ts = datetime.now().strftime("%m-%d %H:%M")
-        symbol_list = ", ".join(symbols)
-        print(f"[{ts}][{tag}][{len(symbols)}]")
-        print(f"[{symbol_list}]")
+        normalized_tag = str(tag or "unknown").strip().upper()
+        normalized_symbols = [
+            str(symbol).strip().upper()
+            for symbol in (symbols or [])
+            if str(symbol).strip()
+        ]
+        symbol_list = "  ".join(normalized_symbols) if normalized_symbols else "-"
+        print(f"{ts} │ {normalized_tag} │ cnt:{len(normalized_symbols)} │ {symbol_list}")
     except Exception as e:
         print(f"[BatchAPI] Failed to print request log: {e}")
 
@@ -448,6 +525,45 @@ def _resolve_default_date(requested_date: Optional[str]) -> Optional[str]:
     if today in available_dates:
         return today
     return available_dates[0]
+
+
+def _resolve_default_direction_gate(cfg_ref: Dict[str, Any]) -> float:
+    """
+    Keep bridge batch default aligned with current quadrant mapping threshold:
+    direction_pref_threshold + direction_pref_neutral_buffer.
+    """
+    if not isinstance(cfg_ref, dict):
+        return BRIDGE_BATCH_MIN_DIRECTION_SCORE
+
+    direction_threshold = _to_optional_float(cfg_ref.get('direction_pref_threshold'))
+    if direction_threshold is None or direction_threshold <= 0:
+        return BRIDGE_BATCH_MIN_DIRECTION_SCORE
+
+    neutral_buffer = _to_optional_float(cfg_ref.get('direction_pref_neutral_buffer'))
+    return abs(direction_threshold) + max(neutral_buffer or 0.0, 0.0)
+
+
+def _resolve_default_vol_gate(cfg_ref: Dict[str, Any]) -> float:
+    """
+    Keep vol batch default aligned with current vol mapping threshold:
+    vol_pref_threshold + max(vol_pref_threshold * buffer_ratio, buffer_min).
+    """
+    if not isinstance(cfg_ref, dict):
+        return BRIDGE_BATCH_MIN_VOL_SCORE
+
+    vol_threshold = _to_optional_float(
+        cfg_ref.get('vol_pref_threshold', cfg_ref.get('penalty_vol_pct_thresh'))
+    )
+    if vol_threshold is None or vol_threshold <= 0:
+        return BRIDGE_BATCH_MIN_VOL_SCORE
+
+    buffer_ratio = _to_optional_float(cfg_ref.get('vol_pref_neutral_buffer_ratio'))
+    buffer_min = _to_optional_float(cfg_ref.get('vol_pref_neutral_buffer_min'))
+    buffer_width = max(
+        abs(vol_threshold) * max(buffer_ratio or 0.0, 0.0),
+        max(buffer_min or 0.0, 0.0),
+    )
+    return abs(vol_threshold) + buffer_width
 
 
 def register_swing_api(app):
@@ -602,7 +718,7 @@ def register_swing_api(app):
 
         _log_batch_request(
             "swing",
-            [item.get("symbol", "") for item in results if item.get("symbol")]
+            [item.get("symbol", "") for item in results if item.get("symbol")] or normalized_symbols
         )
 
         resolved_date = target_date
@@ -689,8 +805,8 @@ def register_bridge_api(app, cfg=None):
         target_date = data.get('date')
         source = data.get('source', 'swing')
         symbols = data.get('symbols')
-        min_direction_score = data.get('min_direction_score', BRIDGE_BATCH_MIN_DIRECTION_SCORE)
-        min_vol_score = data.get('min_vol_score', BRIDGE_BATCH_MIN_VOL_SCORE)
+        min_direction_score = data.get('min_direction_score', _resolve_default_direction_gate(cfg_ref))
+        min_vol_score = data.get('min_vol_score', _resolve_default_vol_gate(cfg_ref))
         limit = data.get('limit', BRIDGE_BATCH_DEFAULT_LIMIT)
 
         if target_date and not re.match(r'^\d{4}-\d{2}-\d{2}$', target_date):
@@ -833,6 +949,7 @@ def register_bridge_api(app, cfg=None):
                 'confidence': record.get('confidence'),
                 'term_structure_ratio': _parse_term_structure_ratio(record.get('term_structure_ratio')),
                 'ivrv_ratio': ivrv_ratio,
+                'market_params': _build_market_params_for_record(record, bridge_data),
                 'bridge': bridge_data,
             })
 
@@ -842,7 +959,9 @@ def register_bridge_api(app, cfg=None):
             results.sort(key=lambda item: abs(_safe_float(item.get('direction_score'), 0.0)), reverse=True)
 
         results = results[:limit]
-        _log_batch_request(source, [item.get('symbol', '') for item in results if item.get('symbol')])
+        result_symbols = [item.get('symbol', '') for item in results if item.get('symbol')]
+        # source=swing 可能被筛选成空结果，回退到请求 symbols，避免日志为空而误判未打印。
+        _log_batch_request(source, result_symbols or normalized_symbols)
 
         return jsonify({
             'success': True,

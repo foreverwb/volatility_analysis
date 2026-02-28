@@ -149,38 +149,71 @@ def build_watchlist_guidance(
     event_tags: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
-    当处于中性/待观察时，提供触发器与监控点
+    当处于中性/待观察时，提供触发器与监控点。
+
+    设计原则（v2.4）：
+    - trigger 阈值使用 watch_* 配置（或从偏好阈值派生），避免把“触发阈值”误用成“偏好映射阈值”。
+    - target_quadrant 用于提示“触发后预期状态”。若另一维仍中性，则用“偏多—中性 / 中性—买波”的形式表达，
+      而不是强行折叠回“中性/待观察”（否则 watch_triggers 将长期失真）。
     """
     triggers: List[Dict[str, str]] = []
     monitors: List[str] = []
     if quadrant and "中性" in quadrant:
-        watch_dir_th = float(cfg.get("watch_direction_trigger", 0.8))
-        vol_th = float(cfg.get("penalty_vol_pct_thresh", 0.4))
-        
-        # 方向触发
-        dir_up = map_direction_pref(watch_dir_th + 0.01, cfg, use_neutral_buffer=False)
-        dir_dn = map_direction_pref(-watch_dir_th - 0.01, cfg, use_neutral_buffer=False)
+        watch_dir_th = float(cfg.get("watch_direction_trigger", cfg.get("direction_pref_threshold", 0.50)))
+        watch_vol_th = float(
+            cfg.get(
+                "watch_vol_trigger",
+                cfg.get("vol_pref_threshold", cfg.get("penalty_vol_pct_thresh", 0.40)),
+            )
+        )
+
+        # 当前偏好（使用正式映射，包含中性缓冲带）
+        dir_pref_now = map_direction_pref(dir_score, cfg, use_neutral_buffer=True)
         vol_pref_now = map_vol_pref(vol_score, cfg, use_neutral_buffer=True)
+
+        # ========== 方向触发 ==========
+        # 触发条件本身就定义了“方向确认”，无需再通过偏好映射函数二次投影
+        dir_up = "偏多"
+        dir_dn = "偏空"
+
+        tgt_up = combine_quadrant(dir_up, vol_pref_now)
+        if "中性" in tgt_up:
+            tgt_up = f"{dir_up}—{vol_pref_now}"
         triggers.append({
             "trigger": f"direction_score ≥ {watch_dir_th}",
-            "target_quadrant": combine_quadrant(dir_up, vol_pref_now)
+            "target_quadrant": tgt_up
         })
+
+        tgt_dn = combine_quadrant(dir_dn, vol_pref_now)
+        if "中性" in tgt_dn:
+            tgt_dn = f"{dir_dn}—{vol_pref_now}"
         triggers.append({
             "trigger": f"direction_score ≤ -{watch_dir_th}",
-            "target_quadrant": combine_quadrant(dir_dn, vol_pref_now)
+            "target_quadrant": tgt_dn
         })
-        
-        # 波动触发
-        vol_buy = map_vol_pref(vol_th + 0.01, cfg, use_neutral_buffer=False)
-        vol_sell = map_vol_pref(-vol_th - 0.01, cfg, use_neutral_buffer=False)
-        dir_pref_now = map_direction_pref(dir_score, cfg, use_neutral_buffer=True)
+
+        # ========== 波动触发 ==========
+        # 波动触发使用 watch_vol_th（不带缓冲），以避免“缓冲带”掩盖监控意义
+        vol_cfg = dict(cfg)
+        vol_cfg["vol_pref_threshold"] = watch_vol_th
+
+        vol_buy = map_vol_pref(watch_vol_th + 0.01, vol_cfg, use_neutral_buffer=False)
+        vol_sell = map_vol_pref(-watch_vol_th - 0.01, vol_cfg, use_neutral_buffer=False)
+
+        tgt_buy = combine_quadrant(dir_pref_now, vol_buy)
+        if "中性" in tgt_buy:
+            tgt_buy = f"{dir_pref_now}—{vol_buy}"
         triggers.append({
-            "trigger": f"vol_score ≥ {vol_th}",
-            "target_quadrant": combine_quadrant(dir_pref_now, vol_buy)
+            "trigger": f"vol_score ≥ {watch_vol_th}",
+            "target_quadrant": tgt_buy
         })
+
+        tgt_sell = combine_quadrant(dir_pref_now, vol_sell)
+        if "中性" in tgt_sell:
+            tgt_sell = f"{dir_pref_now}—{vol_sell}"
         triggers.append({
-            "trigger": f"vol_score ≤ -{vol_th}",
-            "target_quadrant": combine_quadrant(dir_pref_now, vol_sell)
+            "trigger": f"vol_score ≤ -{watch_vol_th}",
+            "target_quadrant": tgt_sell
         })
 
     aor_text = f"{active_open_ratio:.3f}" if isinstance(active_open_ratio, (int, float)) else "N/A"
@@ -197,5 +230,5 @@ def build_watchlist_guidance(
             "target_quadrant": quadrant or "中性/待观察",
         })
         monitors.append("Gamma squeeze 事件延续性：关注量能/IV短端与OI拥挤度变化")
-    
+
     return {"watch_triggers": triggers, "what_to_monitor": monitors}
